@@ -2289,7 +2289,15 @@ console.log('\n[28] Distribution Windows (packaging)');
   assert(build.nsis && build.nsis.oneClick === false, 'dist: NSIS oneClick=false (choix du dossier)');
   assert(build.nsis.allowToChangeInstallationDirectory === true, 'dist: NSIS allowToChangeInstallationDirectory');
   assert(build.nsis.createDesktopShortcut === true, 'dist: NSIS raccourci bureau');
+  assert(build.nsis.createStartMenuShortcut === true, 'dist: NSIS raccourci menu Démarrer');
+  assert(build.nsis.perMachine === false, 'dist: NSIS installation par utilisateur (sans droits admin)');
+  assert(build.nsis.allowElevation === true, 'dist: NSIS élévation autorisée si nécessaire');
+  assert(build.nsis.deleteAppDataOnUninstall === false, 'dist: NSIS conserve les données utilisateur à la désinstallation');
+  assert(build.nsis.installerIcon === 'build/icon.ico', 'dist: NSIS icône d\'installeur');
+  assert(build.nsis.uninstallerIcon === 'build/icon.ico', 'dist: NSIS icône de désinstalleur');
+  assert(build.npmRebuild === false, 'dist: pas de rebuild natif (aucun module natif)');
   assert(String(build.portable.artifactName).includes('Portable'), 'dist: artefact portable nommé');
+  assert(/^Leboncoin-Scraper-Pro-Portable-\$\{version\}\.exe$/.test(build.portable.artifactName), 'dist: artefact portable versionné');
   assert(build.directories.output === 'dist', 'dist: sortie → dist/');
   assert(build.directories.buildResources === 'build', 'dist: resources de build → build/');
 
@@ -2301,6 +2309,9 @@ console.log('\n[28] Distribution Windows (packaging)');
   // Les fichiers de l'app incluent src + playwright
   const files = build.files || [];
   assert(files.some((f) => f.startsWith('src/')), 'dist: files inclut src/**');
+  // Chromium fourni uniquement via extraResources → pas de duplication dans app.asar
+  assert(files.some((f) => f.startsWith('!node_modules/playwright-core/.local-browsers')),
+    'dist: .local-browsers exclu de files (pas de duplication Chromium)');
 
   // Scripts npm cohérents
   const scripts = pkg.scripts || {};
@@ -2324,6 +2335,62 @@ console.log('\n[28] Distribution Windows (packaging)');
   assert(/process\.resourcesPath.*browsers/.test(mainCode.replace(/\n/g, ' ')), 'dist: main.js utilise process.resourcesPath/browsers');
 
   console.log('\n[28] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [29] INTÉGRATION CONTINUE — workflow Windows + vérification de l'installeur
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[29] CI Windows (build + release)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const wfPath = path.join(repoRoot, '.github', 'workflows', 'build-windows.yml');
+  assert(fs.existsSync(wfPath), 'ci: .github/workflows/build-windows.yml présent');
+  const wf = fs.readFileSync(wfPath, 'utf8');
+
+  // Déclencheurs cohérents : push, PR et tags de version.
+  assert(/on:/.test(wf), 'ci: clé « on » présente');
+  assert(/tags:/.test(wf) && /v\*/.test(wf), 'ci: déclenchement sur tags v*');
+  assert(/\bpush:/.test(wf), 'ci: déclenchement sur push');
+  assert(/pull_request:/.test(wf), 'ci: déclenchement sur pull_request');
+  assert(/workflow_dispatch:/.test(wf), 'ci: déclenchement manuel (workflow_dispatch)');
+
+  // Runner Windows + Node compatible.
+  assert(/runs-on:\s*windows-latest/.test(wf), 'ci: runner windows-latest');
+  assert(/node-version:\s*['"]?20/.test(wf), 'ci: Node.js 20');
+  assert(/npm ci/.test(wf), 'ci: installation reproductible (npm ci)');
+  assert(/prepare-browsers\.js/.test(wf), 'ci: préparation du Chromium Windows');
+  assert(/PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD/.test(wf), 'ci: évite le téléchargement Chromium redondant de Playwright');
+  assert(/npm run dist/.test(wf), 'ci: build via npm run dist');
+
+  // Vérification de l'installeur + publication d'un artefact Action.
+  assert(/tools\/verify-dist\.js/.test(wf), 'ci: vérification de l\'artefact (verify-dist.js)');
+  assert(/actions\/upload-artifact@v4/.test(wf), 'ci: artefact GitHub Actions téléchargeable');
+
+  // Publication d'une Release sur tag, avec checksum et permissions minimales.
+  assert(/contents:\s*write/.test(wf), 'ci: permission contents: write (publication Release)');
+  assert(/softprops\/action-gh-release@v2/.test(wf), 'ci: publication via action-gh-release');
+  assert(/\.sha256/.test(wf), 'ci: empreintes SHA-256 jointes');
+  // La Release ne doit être publiée QUE sur un tag de version.
+  assert(/startsWith\(github\.ref,\s*'refs\/tags\/'\)/.test(wf), 'ci: Release conditionnée à un tag de version');
+
+  // Aucun secret en dur.
+  assert(!/ghp_[A-Za-z0-9]/.test(wf) && !/github_pat_/.test(wf), 'ci: aucun jeton en dur');
+
+  // Outil de vérification : présent + exporte une fonction testable.
+  const vdPath = path.join(repoRoot, 'tools', 'verify-dist.js');
+  assert(fs.existsSync(vdPath), 'ci: tools/verify-dist.js présent');
+  const vd = require('../tools/verify-dist.js');
+  assert(typeof vd.verifyDist === 'function', 'ci: verify-dist exporte verifyDist()');
+
+  // verifyDist : échec propre sur dossier absent/vide, liste vide si aucun PNG.
+  const emptyDir = fs.mkdtempSync(path.join(require('os').tmpdir(), 'verify-dist-'));
+  const resMissing = vd.verifyDist(path.join(emptyDir, 'absent'), { minInstallerBytes: 1000 });
+  assert(resMissing.ok === false && resMissing.errors.length > 0, 'ci: verify-dist détecte un dossier absent');
+  const resEmpty = vd.verifyDist(emptyDir, { minInstallerBytes: 1000, requireInstaller: false });
+  assert(resEmpty.errors.length > 0, 'ci: verify-dist détecte l\'absence d\'artefact');
+  fs.rmSync(emptyDir, { recursive: true, force: true });
+
+  console.log('\n[29] OK');
 })();
 
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);

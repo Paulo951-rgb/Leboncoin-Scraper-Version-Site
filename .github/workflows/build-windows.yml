@@ -1,0 +1,127 @@
+name: Build Windows
+
+# Compilation de l'installeur Windows et publication automatique.
+#
+#   * push sur main / pull_request   → build de test, artefact GitHub Actions.
+#   * workflow_dispatch              → build de test déclenché manuellement.
+#   * tag de version (ex. v1.0.1)    → build + publication d'une GitHub Release
+#     contenant l'installeur NSIS, la version portable et leurs empreintes
+#     SHA-256.
+#
+# Le job de build ne dispose que d'un accès LECTURE (contents: read). Seul le job
+# de publication reçoit contents: write, et il ne s'exécute que sur un tag.
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+# Permissions minimales par défaut ; le job de release monte le privilège.
+permissions:
+  contents: read
+
+concurrency:
+  group: build-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    env:
+      # On fournit nous-mêmes le Chromium Windows (tools/prepare-browsers.js).
+      # Sans ceci, `npm ci` téléchargerait aussi le Chromium de Playwright dans
+      # le cache local, en double et sans être embarqué dans l'installeur.
+      PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'
+      CI: 'true'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: '20'
+          cache: npm
+
+      - name: Install dependencies (reproductible)
+        run: npm ci
+
+      - name: Prepare embedded Windows Chromium
+        run: npm run browsers:win
+
+      - name: Verify embedded Chromium is present
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require('fs');
+            const path = require('path');
+            const base = 'node_modules/playwright-core/.local-browsers';
+            if (!fs.existsSync(base)) {
+              core.setFailed('Chromium Playwright absent : ' + base);
+              return;
+            }
+            const hits = [];
+            for (const d of fs.readdirSync(base)) {
+              const exe = path.join(base, d, 'chrome-win', 'chrome.exe');
+              if (fs.existsSync(exe)) hits.push(exe);
+            }
+            if (hits.length === 0) {
+              core.setFailed('chrome-win/chrome.exe introuvable sous ' + base);
+              return;
+            }
+            core.info('Chromium embarqué : ' + hits.join(', '));
+
+      - name: Show effective version
+        run: node -e "console.log('Version buildée :', require('./package.json').version)"
+
+      - name: Build Windows installer + portable
+        run: npm run dist
+
+      - name: Verify installer artifact (fail if incomplete)
+        run: node tools/verify-dist.js --dir=dist
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-installer
+          if-no-files-found: error
+          retention-days: 14
+          path: |
+            dist/*.exe
+            dist/*.sha256
+
+  release:
+    # Publication uniquement sur un tag de version ; jamais sur une PR/du main.
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download built artifacts
+        uses: actions/download-artifact@v4
+        with:
+          name: windows-installer
+          path: artifacts
+
+      - name: Collect release files (flat)
+        shell: bash
+        run: |
+          set -eu
+          ls -laR artifacts
+          mkdir -p release
+          find artifacts -type f \( -name '*.exe' -o -name '*.sha256' \) -exec cp {} release/ \;
+          test "$(find release -type f -name '*.exe' | wc -l)" -ge 1
+          ls -la release
+
+      - name: Publish GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: release/*
+          fail_on_unmatched_files: true
+          generate_release_notes: true
+          draft: false
+          prerelease: ${{ contains(github.ref_name, '-') }}

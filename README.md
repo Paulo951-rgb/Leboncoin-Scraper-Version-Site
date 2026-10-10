@@ -90,7 +90,7 @@ L'utilisateur choisit parmi **3 profils de données** au moment du scraping :
 Aucune connaissance technique requise. Vous n'avez **pas besoin de Node.js, npm ou d'un terminal**.
 
 ### Windows
-1. Téléchargez le fichier `.exe` d'installation (ou la version portable) depuis la page de téléchargement.
+1. Téléchargez le fichier `.exe` d'installation (ou la version portable) depuis la page **GitHub Releases** du dépôt (`Releases` → dernière version → `Leboncoin Scraper Pro Setup x.x.x.exe`).
 2. Double-cliquez sur le `.exe` et suivez l'assistant d'installation (choix du dossier, raccourci bureau/menu démarrer).
 3. Lancez **Leboncoin Scraper Pro** depuis le raccourci créé.
 4. Au premier lancement, un écran d'information légal s'affiche : lisez-le et acceptez-le.
@@ -153,6 +153,7 @@ npm start
 | `npm run pack` | `electron-builder --dir` | Packaging local (non distribuable) — `prepack` prépare le Chromium |
 | `npm run dist` | `electron-builder --win` | Génère l'installeur + la version portable Windows — `predist` prépare le Chromium Windows |
 | `npm run build` | `electron-builder --win` | Alias de `dist` |
+| — | `node tools/verify-dist.js` | Vérifie un build `dist/` et écrit les `.sha256` (utilisé par la CI) |
 
 > Les scripts `prepack`/`predist`/`prebuild` (hooks npm automatiques) appellent `prepare-browsers.js` pour garantir que le Chromium embarqué correspond bien à la plateforme cible : sur un poste Windows, le Chromium hôte ; lors d'un build croisé Windows depuis Linux, le Chromium Windows (`--platform=win`).
 
@@ -365,6 +366,53 @@ npm run dist
 Produit dans `dist/` :
 - `Leboncoin Scraper Pro Setup x.x.x.exe` — installeur NSIS (choix du dossier, raccourcis).
 - `Leboncoin-Scraper-Pro-Portable-x.x.x.exe` — version portable autonome.
+
+### Vérifier un build
+
+```bash
+node tools/verify-dist.js --dir=dist
+```
+
+Contrôle que l'installeur, l'application packagée (`win-unpacked/` avec
+`app.asar` et `ffmpeg.dll`) et le Chromium embarqué sont bien présents, que les
+exécutables ont un en-tête PE valide et que l'installeur dépasse une taille
+plancher. Le script écrit les empreintes `.sha256` et sort en code `1` si un
+contrôle bloquant échoue — un build incomplet n'est jamais diffusé.
+
+### Compilation automatique (recommandée)
+
+Le build Windows est réalisé automatiquement par GitHub Actions
+(`.github/workflows/build-windows.yml`), sur un runner **Windows** — c'est la
+méthode la plus fiable : elle évite les problèmes de build croisé (Wine) et
+l'erreur `Error: spawn UNKNOWN` observée lors de la génération du désinstalleur
+sous Linux.
+
+- **Push sur `main` / pull request / déclenchement manuel** → build de test,
+  l'installeur est publié comme **artefact** téléchargeable de l'exécution
+  GitHub Actions (rétention 14 jours).
+- **Tag de version (`vX.Y.Z`)** → build puis **publication d'une GitHub Release**
+  contenant l'installeur NSIS, la version portable et leurs empreintes
+  `.sha256`.
+
+### Publier une version ⭐
+
+Pour publier une nouvelle version dans GitHub Releases :
+
+```bash
+# 1. mettre à jour la version dans package.json (ex. "1.0.1")
+git commit -am "chore: release 1.0.1"
+# 2. créer et pousser le tag de version
+git tag v1.0.1
+git push origin main v1.0.1
+```
+
+Le workflow se charge du reste : il compile sur Windows, vérifie l'installeur,
+puis crée la Release **`v1.0.1`** et y joint les fichiers. Aucun jeton n'est
+requis : le `GITHUB_TOKEN` fourni par GitHub Actions suffit (permission
+`contents: write` accordée uniquement au job de publication).
+
+> **Astuce** : un tag contenant un tiret (ex. `v1.0.1-beta.1`) crée une
+> *pre-release* GitHub, utile pour les versions de test.
 
 ### Configuration electron-builder
 

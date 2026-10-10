@@ -9,17 +9,24 @@ stabilisation. Pour chaque entrée : impact, circonstances, prochaines étapes.
 
 ## KI-1 — Démarrage de l'exe Windows non testé sur Windows réel *(P2, environnement)*
 
-- **Impact réduit** : le build croisé Linux → Windows produit désormais bien
-  l'installeur NSIS **et** la version portable, avec le Chromium **Windows**
-  embarqué (`resources/browsers/chromium-1097/chrome-win/chrome.exe`). Les
-  artefacts ont été vérifiés statiquement (en-tête PE `MZ`, chaînes de version
-  `ProductName`/`FileDescription` présentes, icône embarquée, présence du
-  Chromium Windows). En revanche, **le lancement effectif sous Windows** n'a pas
-  pu être testé ici (environnement Linux) : démarrage de l'installeur, exécution
-  de l'app et scraping réel restent à valider sur une machine Windows.
+- **Statut (mise à jour)** : le build Windows est désormais réalisé nativement
+  par GitHub Actions sur un runner **Windows** (`windows-latest`), via
+  `.github/workflows/build-windows.yml`. Cela supprime la cause de l'erreur
+  `Error: spawn UNKNOWN` observée en build croisé Linux → Windows
+  (`NsisTarget.computeScriptAndSignUninstaller` → exécution de l'installeur, très
+  volumineux, pour extraire le désinstalleur, sous Wine). L'installeur et la
+  version portable sont vérifiés par `tools/verify-dist.js` avant publication
+  (installeur NSIS, `win-unpacked/` + `app.asar` + `ffmpeg.dll`, Chromium
+  embarqué, en-tête PE, taille minimale).
+- **Impact résiduel** : **le lancement effectif sous Windows** (exécution de
+  l'installeur par un utilisateur final, démarrage de l'app, scraping réel,
+  désinstallation) n'a pas pu être rejoué dans l'environnement d'écriture (Linux).
+  Les contrôles automatisés portent sur la présence et la structure des fichiers,
+  pas sur l'exécution.
 - **Circonstances** : uniquement lors de la distribution.
-- **Prochaines étapes** : sur Windows, exécuter l'installeur, lancer l'app,
-  vérifier le démarrage hors ligne et un job de scraping complet.
+- **Prochaines étapes** : télécharger l'artefact de la CI (ou la Release),
+  exécuter l'installeur sur Windows 10/11 x64, lancer l'app, vérifier le
+  démarrage hors ligne, un job de scraping complet, puis la désinstallation.
 
 ## KI-2 — Tests d'interface graphique absents *(P2)*
 
