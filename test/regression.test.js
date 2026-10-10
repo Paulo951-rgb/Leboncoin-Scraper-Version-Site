@@ -2160,6 +2160,172 @@ console.log('\n[26] Contrat IPC preload ↔ main');
   console.log('\n[26] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [27] CARTE (statsModule) — logique pure de sélection et validation coords
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[27] Carte statsModule (logique pure)');
+(() => {
+  const vm = require('vm');
+  const repoRoot = path.join(__dirname, '..');
+  const code = fs.readFileSync(path.join(repoRoot, 'src/renderer/statsModule.js'), 'utf8');
+
+  const fakeEl = {
+    textContent: '', innerHTML: '', value: 'ALL', checked: true, style: {},
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    addEventListener() {},
+  };
+  const windowObj = { api: { getHistory: async () => [] } };
+  const sandbox = {
+    window: windowObj,
+    document: { getElementById: () => fakeEl, querySelectorAll: () => [] },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    escapeHtml: (s) => String(s == null ? '' : s),
+    escapePath: (s) => String(s == null ? '' : s),
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout, clearTimeout, fetch: async () => { throw new Error('no net'); },
+    AbortController,
+    // Globals fournis par app.js/appState.js en exécution réelle.
+    statsSessionSelect: fakeEl,
+    populateSessionDropdown: () => {},
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(code, sandbox);
+
+  const { computeMapPoints, isValidLatLng, _deliveryTypeOf } = windowObj;
+  assert(typeof computeMapPoints === 'function', 'carte: computeMapPoints exposé');
+  assert(typeof isValidLatLng === 'function', 'carte: isValidLatLng exposé');
+
+  // Déduplication par id (une annonce présente dans 2 sessions n'apparaît qu'une fois)
+  const ads = [
+    { id: 'a1', title: 'Vélo', deliveryType: 'main_propre', city: 'Lyon' },
+    { id: 'a1', title: 'Vélo', deliveryType: 'main_propre', city: 'Lyon' }, // doublon
+    { id: 'a2', title: 'Canapé', deliveryType: 'livraison', city: 'Paris' },
+    { id: 'a3', title: 'Table', deliveryType: 'les_deux', city: 'Nantes' },
+    { id: 'a4', title: 'Lampe', deliveryType: 'inconnu', city: 'Lille' },
+  ];
+  const all = computeMapPoints(ads, false);
+  assert(all.deduped.length === 4, 'carte: déduplication id → 4 annonces uniques');
+  assert(all.target.length === 4, 'carte: sans filtre → toutes les annonces uniques');
+
+  const mp = computeMapPoints(ads, true);
+  assert(mp.target.length === 2, 'carte: filtre main propre → main_propre + les_deux (a1, a3)');
+  assert(mp.target.every((a) => a.id === 'a1' || a.id === 'a3'), 'carte: filtre main propre garde les bons ids');
+
+  // Dédup : la clé est id || url || title (le premier disponible).
+  const byUrl = computeMapPoints([{ url: 'u1' }, { url: 'u1' }], false);
+  assert(byUrl.deduped.length === 1, 'carte: dédup par url quand id absent');
+  const mixed = computeMapPoints([
+    { url: 'u1', title: 'X' }, { url: 'u1', title: 'X' }, { title: 'Y' },
+  ], false);
+  assert(mixed.deduped.length === 2, 'carte: dédup par url (2 entrées url=u1 → 1) + titre Y → 2 uniques');
+
+  // Rétro-compat : deliveryType absent → calcul depuis livraison/mainPropre
+  assert(_deliveryTypeOf({ livraison: true, mainPropre: true }) === 'les_deux', 'carte: compat livraison+mainPropre → les_deux');
+  assert(_deliveryTypeOf({ shipping: true, handDelivery: true }) === 'les_deux', 'carte: compat shipping/handDelivery → les_deux');
+  const compat = computeMapPoints([{ id: 'c1', mainPropre: true }], true);
+  assert(compat.target.length === 1, 'carte: filtre main propre via rétro-compat');
+
+  // Validation des coordonnées : valides acceptées, invalides rejetées
+  assert(isValidLatLng([48.85, 2.35]) === true, 'carte: coords France valides');
+  assert(isValidLatLng([-90, -180]) === true, 'carte: bornes min valides');
+  assert(isValidLatLng([90, 180]) === true, 'carte: bornes max valides');
+  assert(isValidLatLng(null) === false, 'carte: null rejeté');
+  assert(isValidLatLng([]) === false, 'carte: tableau vide rejeté');
+  assert(isValidLatLng([48.85]) === false, 'carte: un seul élément rejeté');
+  assert(isValidLatLng([NaN, 2.35]) === false, 'carte: NaN rejeté');
+  assert(isValidLatLng([91, 2.35]) === false, 'carte: latitude hors bornes rejetée');
+  assert(isValidLatLng([48.85, 181]) === false, 'carte: longitude hors bornes rejetée');
+  assert(isValidLatLng(['48.85', '2.35']) === false, 'carte: chaînes numériques rejetées');
+
+  // Le module ne doit pas écrire dans le conteneur Leaflet (détruirait la carte) :
+  // l'état passe par mapStatus, et les marqueurs par un L.layerGroup.
+  assert(!/mapEl\.innerHTML/.test(code), 'carte: ne détruit pas le conteneur #leafletMap (pas d\'innerHTML dessus)');
+  assert(/mapMarkerLayer\.clearLayers\(\)/.test(code), 'carte: calque de marqueurs vidé à chaque rendu (anti-doublons)');
+  assert(/L\.layerGroup\(\)/.test(code), 'carte: marqueurs dans un L.layerGroup');
+  assert(/getElementById\('mapStatus'\)/.test(code), 'carte: messages d\'état via #mapStatus');
+
+  // Fiabilité hors ligne : Leaflet/Chart.js sont embarqués localement, plus de
+  // CDN public au chargement de l'interface (l'UI ne dépend plus d'un
+  // fournisseur externe pour s'afficher).
+  const html = fs.readFileSync(path.join(repoRoot, 'src/renderer/index.html'), 'utf8');
+  assert(/src="vendor\/leaflet\.js"/.test(html), 'carte: Leaflet servi localement (vendor/leaflet.js)');
+  assert(/href="vendor\/leaflet\.css"/.test(html), 'carte: CSS Leaflet servi localement (vendor/leaflet.css)');
+  assert(/src="vendor\/chart\.umd\.min\.js"/.test(html), 'graphiques: Chart.js servi localement (vendor/chart.umd.min.js)');
+  assert(!/cdn\.jsdelivr\.net|unpkg\.com/.test(html), 'CSP/HTML: plus aucune référence CDN au chargement');
+  assert(/script-src 'self' 'unsafe-inline';/.test(html) && !/script-src [^;]*https:/.test(html), 'CSP: script-src limité à self (pas de CDN)');
+  for (const f of ['vendor/leaflet.js', 'vendor/leaflet.css', 'vendor/chart.umd.min.js',
+                   'vendor/images/marker-icon.png', 'vendor/images/marker-shadow.png']) {
+    assert(fs.existsSync(path.join(repoRoot, 'src/renderer', f)), `carte: ressource locale présente → ${f}`);
+  }
+
+  console.log('\n[27] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [28] DISTRIBUTION WINDOWS — icône, config electron-builder, prepare-browsers
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[28] Distribution Windows (packaging)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+
+  // Icône : présente et multi-résolutions (Windows exige au moins 256px)
+  const icoPath = path.join(repoRoot, 'build', 'icon.ico');
+  assert(fs.existsSync(icoPath), 'dist: build/icon.ico présent');
+  const icoBuf = fs.readFileSync(icoPath);
+  const icoCount = icoBuf.readUInt16LE(4); // nombre d'images dans le .ICO
+  assert(icoCount >= 6, `dist: icône multi-résolutions (${icoCount} tailles ≥ 6)`);
+  assert(fs.existsSync(path.join(repoRoot, 'build', 'icon.png')), 'dist: build/icon.png (source) présent');
+
+  // Config electron-builder
+  const build = pkg.build || {};
+  assert(pkg.main === 'src/main/main.js', 'dist: main pointe vers src/main/main.js');
+  assert(build.appId && build.productName, 'dist: appId + productName définis');
+  assert(build.win && build.win.icon === 'build/icon.ico', 'dist: win.icon → build/icon.ico');
+  const targets = (build.win.target || []).map((t) => (typeof t === 'string' ? t : t.target));
+  assert(targets.includes('nsis'), 'dist: cible NSIS (installeur)');
+  assert(targets.includes('portable'), 'dist: cible portable (standalone)');
+  assert(build.nsis && build.nsis.oneClick === false, 'dist: NSIS oneClick=false (choix du dossier)');
+  assert(build.nsis.allowToChangeInstallationDirectory === true, 'dist: NSIS allowToChangeInstallationDirectory');
+  assert(build.nsis.createDesktopShortcut === true, 'dist: NSIS raccourci bureau');
+  assert(String(build.portable.artifactName).includes('Portable'), 'dist: artefact portable nommé');
+  assert(build.directories.output === 'dist', 'dist: sortie → dist/');
+  assert(build.directories.buildResources === 'build', 'dist: resources de build → build/');
+
+  // extraResources embarque le navigateur Playwright (browsers/)
+  const extra = build.extraResources || [];
+  const browsersRes = extra.find((e) => e.to === 'browsers');
+  assert(!!browsersRes, 'dist: extraResources → browsers/ (Chromium embarqué)');
+  assert(String(browsersRes.from).includes('.local-browsers'), 'dist: browsers/ vient de playwright-core/.local-browsers');
+  // Les fichiers de l'app incluent src + playwright
+  const files = build.files || [];
+  assert(files.some((f) => f.startsWith('src/')), 'dist: files inclut src/**');
+
+  // Scripts npm cohérents
+  const scripts = pkg.scripts || {};
+  assert(scripts.dist === 'electron-builder --win', 'dist: script npm run dist → electron-builder --win');
+  assert(scripts.pack === 'electron-builder --dir', 'dist: script npm run pack → --dir');
+  assert(/prepare-browsers\.js/.test(scripts.predist || ''), 'dist: predist prépare le Chromium Windows');
+  assert(/--platform=win/.test(scripts.predist || ''), 'dist: predist télécharge le Chromium Windows (pas l\'hôte Linux)');
+  assert(/prepare-browsers\.js/.test(scripts.browsers || ''), 'dist: script browsers présent');
+
+  // prepare-browsers : nom d'archive + sous-dossier par plateforme
+  const pb = require('../tools/prepare-browsers');
+  assert(pb.archiveName('win', 'x64') === 'chromium-win64.zip', 'dist: archive win-x64 = chromium-win64.zip');
+  assert(pb.archiveName('win', 'arm64') === 'chromium-win-arm64.zip', 'dist: archive win-arm64');
+  assert(pb.archiveName('linux', 'x64') === 'chromium-linux.zip', 'dist: archive linux');
+  assert(pb.extractedDir('win') === 'chrome-win', 'dist: extraction win → chrome-win/');
+  assert(pb.extractedDir('linux') === 'chrome-linux', 'dist: extraction linux → chrome-linux/');
+
+  // main.js : résolution du chemin Chromium embarqué quand packagé
+  const mainCode = fs.readFileSync(path.join(repoRoot, 'src/main/main.js'), 'utf8');
+  assert(/PLAYWRIGHT_BROWSERS_PATH/.test(mainCode), 'dist: main.js pointe PLAYWRIGHT_BROWSERS_PATH (app packagée)');
+  assert(/process\.resourcesPath.*browsers/.test(mainCode.replace(/\n/g, ' ')), 'dist: main.js utilise process.resourcesPath/browsers');
+
+  console.log('\n[28] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

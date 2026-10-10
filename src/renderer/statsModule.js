@@ -7,19 +7,68 @@ const statHandDelivery = document.getElementById('statHandDelivery');
 const statLivraison = document.getElementById('statLivraison');
 const statDeliveryTypeDist = document.getElementById('statDeliveryTypeDist');
 
-/**
- * Calcule le deliveryType depuis les anciens champs livraison/mainPropre
- * pour la rétro-compatibilité des annonces cachées sans deliveryType.
- */
-function _computeDeliveryTypeCompatMap(livraison, mainPropre) {
-  if (livraison === true && mainPropre === true) return 'les_deux';
-  if (livraison === true) return 'livraison';
-  if (mainPropre === true) return 'main_propre';
-  if (livraison === false && mainPropre === false) return 'aucun';
-  if (livraison === false) return 'aucun';
-  if (mainPropre === false) return 'aucun';
-  return 'inconnu';
-}
+// Compat + sélection des points de carte : regroupés dans un seul IIFE qui
+// expose les helpers au `window` pour que les tests puissent les charger
+// directement (sans jsdom ni Leaflet). Les fonctions rendues globales portent
+// des noms explicites ; le rendu réel (renderMap) reste appelé par renderStatsView.
+(() => {
+  /**
+   * Calcule le deliveryType depuis les anciens champs livraison/mainPropre
+   * pour la rétro-compatibilité des annonces cachées sans deliveryType.
+   */
+  function _computeDeliveryTypeCompatMap(livraison, mainPropre) {
+    if (livraison === true && mainPropre === true) return 'les_deux';
+    if (livraison === true) return 'livraison';
+    if (mainPropre === true) return 'main_propre';
+    if (livraison === false && mainPropre === false) return 'aucun';
+    if (livraison === false) return 'aucun';
+    if (mainPropre === false) return 'aucun';
+    return 'inconnu';
+  }
+
+  function _deliveryTypeOf(a) {
+    return a.deliveryType ?? _computeDeliveryTypeCompatMap(
+      a.livraison ?? a.shipping,
+      a.mainPropre ?? a.handDelivery
+    );
+  }
+
+  // Déduplique (une même annonce peut apparaître dans plusieurs sessions) puis
+  // applique, si demandé, le filtre « remise en main propre ». Logique pure,
+  // testable sans DOM ni Leaflet.
+  function computeMapPoints(ads, handDeliveryOnly) {
+    const list = Array.isArray(ads) ? ads : [];
+    const seen = new Set();
+    const deduped = [];
+    for (const a of list) {
+      const key = a.id || a.url || a.title;
+      if (key) {
+        if (seen.has(key)) continue;
+        seen.add(key);
+      }
+      deduped.push(a);
+    }
+    const target = handDeliveryOnly
+      ? deduped.filter((a) => {
+          const dt = _deliveryTypeOf(a);
+          return dt === 'main_propre' || dt === 'les_deux';
+        })
+      : deduped;
+    return { deduped, target };
+  }
+
+  // Coordonnées valides = [lat, lng] finis, lat ∈ [-90,90], lng ∈ [-180,180].
+  // Ignore proprement les coordonnées absentes, nulles ou hors bornes au lieu de
+  // placer une annonce à un emplacement inventé.
+  function isValidLatLng(coords) {
+    return Array.isArray(coords) && coords.length === 2 &&
+      Number.isFinite(coords[0]) && Number.isFinite(coords[1]) &&
+      coords[0] >= -90 && coords[0] <= 90 &&
+      coords[1] >= -180 && coords[1] <= 180;
+  }
+
+  Object.assign(window, { _computeDeliveryTypeCompatMap, _deliveryTypeOf, computeMapPoints, isValidLatLng });
+})();
 const statPro = document.getElementById('statPro');
 const statPart = document.getElementById('statPart');
 
@@ -176,15 +225,22 @@ async function geocodeCityGov(cityName, zipcode) {
   return null;
 }
 
+// Affiche un message d'état sous la carte (aucun point, Leaflet indisponible,
+// coordonnées manquantes…) sans toucher au DOM interne de Leaflet (écrire dans
+// le conteneur de la carte le détruirait).
+function setMapStatus(message) {
+  const el = document.getElementById('mapStatus');
+  if (!el) return;
+  el.textContent = message || '';
+  el.classList.toggle('hidden', !message);
+}
+
 // 🗺️ CARTE INTERACTIVE LEAFLET AVEC FILTRAGE MAIN PROPRE ET API GOUV (SUR SAUVEGARDE PROPRE)
 async function renderMap(ads) {
   // Diagnostic Leaflet : si le script CDN n'a pas pu charger (réseau bloqué,
   // CSP, etc.), on prévient l'utilisateur au lieu de rester silencieux.
   if (typeof L === 'undefined') {
-    const mapEl = document.getElementById('leafletMap');
-    if (mapEl) {
-      mapEl.innerHTML = '<div style="display:flex; align-items:center; justify-content:center; height:100%; color:var(--text-muted); font-size:0.85rem; padding:20px; text-align:center;">⚠️ Leaflet non chargé (vérifiez votre connexion Internet).<br>Rechargez l\'onglet pour réessayer.</div>';
-    }
+    setMapStatus('⚠️ Carte indisponible : la bibliothèque Leaflet n\'a pas pu être chargée (connexion Internet requise).');
     console.warn('[Carte] Leaflet non disponible (L undefined) — vérifiez la connectivité ou la CSP.');
     return;
   }
@@ -202,51 +258,48 @@ async function renderMap(ads) {
       }).addTo(mapInstance);
     }
 
-    // Effacer les anciens marqueurs (mais garder le tile layer)
-    mapInstance.eachLayer((layer) => {
-      if (layer instanceof L.Marker) mapInstance.removeLayer(layer);
-    });
+    // Calque dédié aux marqueurs : vidé à chaque rendu. On n'utilise PAS
+    // `instanceof L.Marker` (fragile si le constructeur change de référence) et
+    // on garantit l'absence de doublons de marqueurs après plusieurs rendus.
+    if (!mapMarkerLayer) {
+      mapMarkerLayer = L.layerGroup().addTo(mapInstance);
+    }
+    mapMarkerLayer.clearLayers();
 
     const mapHandDeliveryEl = document.getElementById('mapHandDeliveryOnly');
     const mapHandDeliveryOnly = !!(mapHandDeliveryEl && mapHandDeliveryEl.checked);
 
-    // Déduplication : une même annonce peut apparaître dans plusieurs sessions
-    const seenIds = new Set();
-    const dedupedAds = [];
-    for (const a of ads) {
-      const key = a.id || a.url || a.title;
-      if (!key || !seenIds.has(key)) {
-        if (key) seenIds.add(key);
-        dedupedAds.push(a);
-      }
-    }
+    const { deduped, target } = computeMapPoints(ads, mapHandDeliveryOnly);
+    const dupes = ads.length - deduped.length;
+    console.log(`[Carte] ${mapHandDeliveryOnly ? 'Filtre main propre ON' : 'Filtre main propre OFF'} : ${target.length} annonce(s) à géocoder sur ${deduped.length} (${dupes} doublon(s) supprimé(s))`);
 
-    // Filtrer les annonces "main propre" uniquement : deliveryType === 'main_propre'
-    // ou deliveryType === 'les_deux' (livraison + main propre). Rétro-compat :
-    // si deliveryType absent, on calcule depuis livraison/mainPropre.
-    let targetAds = dedupedAds;
-    if (mapHandDeliveryOnly) {
-      targetAds = dedupedAds.filter((a) => {
-        const dt = a.deliveryType ?? _computeDeliveryTypeCompatMap(a.livraison ?? a.shipping, a.mainPropre ?? a.handDelivery);
-        return dt === 'main_propre' || dt === 'les_deux';
-      });
-      console.log(`[Carte] Filtre main propre ON : ${targetAds.length}/${dedupedAds.length} annonces (main_propre + les_deux) — ${ads.length - dedupedAds.length} doublon(s) supprimé(s)`);
-    } else {
-      console.log(`[Carte] Filtre main propre OFF : ${dedupedAds.length} annonces affichées — ${ads.length - dedupedAds.length} doublon(s) supprimé(s)`);
+    // Rien à afficher : message explicite plutôt qu'une carte muette.
+    if (target.length === 0) {
+      setMapStatus(mapHandDeliveryOnly
+        ? 'Aucune annonce en remise en main propre dans cette sélection. Décochez le filtre pour afficher toutes les annonces localisables.'
+        : 'Aucune annonce à localiser dans cette sélection.');
+      if (mapInstance) mapInstance.invalidateSize();
+      return;
     }
 
     // Géocodage à concurrence limitée
     const GEOCODE_CONCURRENCY = 6;
-    const queue = [...targetAds];
+    const queue = [...target];
+    let placed = 0;
+    let geocodeFailed = 0;
+
     const placeMarker = (a, coords) => {
-      if (!coords) return;
       if (isStale()) return;
+      if (!isValidLatLng(coords)) { geocodeFailed++; return; }
+      // Léger décalage pour éviter la superposition exacte de plusieurs annonces
+      // d'une même ville ; reste dans l'ordre [latitude, longitude] attendu par
+      // Leaflet (le géocodeur gouv renvoie [longitude, latitude], déjà inversé).
       const jitterCoords = [
         coords[0] + (Math.random() - 0.5) * 0.012,
-        coords[1] + (Math.random() - 0.5) * 0.012
+        coords[1] + (Math.random() - 0.5) * 0.012,
       ];
-      const marker = L.marker(jitterCoords).addTo(mapInstance);
-      const dt = a.deliveryType ?? _computeDeliveryTypeCompatMap(a.livraison ?? a.shipping, a.mainPropre ?? a.handDelivery);
+      const marker = L.marker(jitterCoords);
+      const dt = _deliveryTypeOf(a);
       const deliveryTxt = dt === 'livraison' ? '📦 Livraison possible'
         : dt === 'main_propre' ? '🤝 Remise en main propre'
         : dt === 'les_deux' ? '📦🤝 Livraison + Main propre'
@@ -261,6 +314,8 @@ async function renderMap(ads) {
           <a href="#" onclick="openUrl('${escapePath(a.url)}'); return false;" style="color:#38bdf8; text-decoration:underline;">Ouvrir l'annonce</a>
         </div>
       `);
+      mapMarkerLayer.addLayer(marker);
+      placed++;
     };
 
     const worker = async () => {
@@ -272,17 +327,32 @@ async function renderMap(ads) {
           const coords = await geocodeCityGov(a.city, a.zipcode);
           placeMarker(a, coords);
         } catch (err) {
+          geocodeFailed++;
           console.warn(`[Carte] géocodage échoué pour ${a.city || '?'} :`, err.message);
         }
       }
     };
 
-    await Promise.all(Array.from({ length: Math.min(GEOCODE_CONCURRENCY, targetAds.length) }, () => worker()));
+    await Promise.all(Array.from({ length: Math.min(GEOCODE_CONCURRENCY, target.length) }, () => worker()));
+
+    // Un rendu plus récent a pris le relais : ne pas écraser son message.
+    if (isStale()) return;
+
+    // Compte-rendu utilisateur : nombre de points affichés + raison si vide.
+    if (placed === 0) {
+      setMapStatus('Aucune annonce localisable dans cette sélection (villes ou codes postaux absents/reconnus par le géocodage).');
+    } else {
+      const parts = [`${placed} annonce(s) localisée(s) sur la carte.`];
+      if (geocodeFailed > 0) parts.push(`${geocodeFailed} sans coordonnées exploitables.`);
+      if (dupes > 0) parts.push(`${dupes} doublon(s) ignoré(s).`);
+      setMapStatus(parts.join(' '));
+    }
 
     // Important : invalider la taille après le rendu pour que Leaflet recalcule
     if (mapInstance) mapInstance.invalidateSize();
   } catch (err) {
     console.error('[Carte] Erreur lors du rendu de la carte :', err.message);
+    setMapStatus('⚠️ Impossible d\'afficher la carte (erreur d\'initialisation).');
   }
 }
 

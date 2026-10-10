@@ -7,13 +7,19 @@ stabilisation. Pour chaque entrée : impact, circonstances, prochaines étapes.
 
 ---
 
-## KI-1 — Build `.exe` non vérifié dans cet environnement *(P2, environnement)*
+## KI-1 — Démarrage de l'exe Windows non testé sur Windows réel *(P2, environnement)*
 
-- **Impact** : on ne peut pas garantir que l'installeur NSIS/portable démarre
-  avec Chromium embarqué, faute de machine Windows et de Wine ici.
-- **Circonstances** : uniquement lors de la génération/distribution.
-- **Prochaines étapes** : exécuter `npm run dist` sur Windows (ou CI Windows),
-  lancer l'installeur, vérifier `resources/browsers/` et le démarrage hors ligne.
+- **Impact réduit** : le build croisé Linux → Windows produit désormais bien
+  l'installeur NSIS **et** la version portable, avec le Chromium **Windows**
+  embarqué (`resources/browsers/chromium-1097/chrome-win/chrome.exe`). Les
+  artefacts ont été vérifiés statiquement (en-tête PE `MZ`, chaînes de version
+  `ProductName`/`FileDescription` présentes, icône embarquée, présence du
+  Chromium Windows). En revanche, **le lancement effectif sous Windows** n'a pas
+  pu être testé ici (environnement Linux) : démarrage de l'installeur, exécution
+  de l'app et scraping réel restent à valider sur une machine Windows.
+- **Circonstances** : uniquement lors de la distribution.
+- **Prochaines étapes** : sur Windows, exécuter l'installeur, lancer l'app,
+  vérifier le démarrage hors ligne et un job de scraping complet.
 
 ## KI-2 — Tests d'interface graphique absents *(P2)*
 
@@ -79,16 +85,14 @@ stabilisation. Pour chaque entrée : impact, circonstances, prochaines étapes.
 - **Prochaines étapes** : planifier un lot « dépendances » avec majeur Playwright
   + Electron + electron-builder, et une campagne de packaging/capture après.
 
-## KI-7 — Icône de build manquante *(P2, packaging)*
+## KI-7 — ~~Icône de build manquante~~ *(RÉSOLU, packaging)*
 
-- **Impact** : `build/icon.ico` est référencé par `package.json` mais **absent**
-  du dépôt. La cible **portable** d'electron-builder échoue (« icon.ico not
-  found ») ; la cible NSIS utilise l'icône par défaut d'Electron.
-- **Circonstances** : `npm run dist` / `npm run pack`.
-- **Prochaines étapes** : fournir `build/icon.ico` (≥ 256×256, multi-résolutions)
-  ou retirer `icon`/`installerIcon`/`uninstallerIcon` de la config pour accepter
-  l'icône par défaut. Non corrigé ici car aucune ressource graphique n'est
-  disponible dans l'environnement.
+- **Résolu** : `build/icon.ico` (multi-résolutions 16→256) et `build/icon.png`
+  sont désormais présents et générables via `npm run icon`
+  (`tools/generate-icon.py`, Pillow). La cible portable et l'installeur NSIS
+  utilisent bien l'icône dédiée (vérifié dans l'exe : groupe d'icônes présent).
+- Conservé ici pour mémoire : ne pas réintroduire un `icon` pointant vers un
+  fichier absent.
 
 ## KI-6 — Blocage anti-bot Leboncoin (comportement normal, documenté) *(P3)*
 

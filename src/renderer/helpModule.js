@@ -30,9 +30,10 @@ const FAQ_DATA = [
         <ul>
           <li><strong>leboncoin.fr</strong> pour récupérer les annonces ;</li>
           <li>l'API de géocodage du gouvernement français (geo.api.gouv.fr) pour positionner les villes sur la carte ;</li>
-          <li>des CDN publics (jsdelivr, unpkg) pour charger les bibliothèques d'affichage (graphiques, carte) et les tuiles OpenStreetMap lorsque la carte est affichée.</li>
+          <li>les tuiles de fond de carte <strong>OpenStreetMap</strong> (openstreetmap.org) lorsque la carte est affichée.</li>
         </ul>
-        <p>Vos annonces scrapées ne sont jamais envoyées à ces services : ils ne servent qu'à charger du code et des fonds de carte.</p>
+        <p>Les bibliothèques d'affichage (graphiques Chart.js, carte Leaflet) sont <strong>embarquées dans le logiciel</strong> : elles ne sont plus téléchargées depuis un CDN. L'interface fonctionne donc même hors ligne (seule la carte a besoin d'Internet pour ses tuiles).</p>
+        <p>Vos annonces scrapées ne sont jamais envoyées à ces services : ils ne servent qu'à charger des fonds de carte.</p>
         <p>Aucune clé API payante n'est requise.</p>`
   },
   {

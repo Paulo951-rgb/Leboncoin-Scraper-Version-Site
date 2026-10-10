@@ -3,6 +3,56 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Phase 3 (suite) : carte, ressources locales, packaging Windows — 2026-10-10
+
+### Corrigé
+
+- **Carte Stats détruite au moindre échec (P2)** : `renderMap` utilisait un
+  retrait de marqueurs par `instanceof L.Marker` (fragile) et, en cas d'erreur,
+  écrivait du HTML brut dans `#leafletMap`, ce qui détruisait le DOM interne de
+  Leaflet et rendait la carte définitivement inutilisable. Les marqueurs sont
+  désormais stockés dans un `L.layerGroup` dédié (`mapMarkerLayer`), nettoyé via
+  `clearLayers()` ; la logique de calcul des points a été extraite en
+  `computeMapPoints()` (pure, testable) avec déduplication par `id||url||title`,
+  validation `isValidLatLng()` et messages d'état via `setMapStatus()`.
+  (`renderer/statsModule.js`, `renderer/appState.js`, `renderer/index.html`,
+  `renderer/styles.css`)
+
+### Modifié
+
+- **Bibliothèques cartographiques servies localement (P2, sécurité)** : Leaflet
+  1.9.4 et Chart.js sont désormais embarqués dans `src/renderer/vendor/` au lieu
+  d'être chargés depuis un CDN distant. La CSP est resserrée (`script-src 'self'`),
+  supprimant toute dépendance réseau au chargement de l'UI et la surface d'attaque
+  CDN. (`renderer/index.html`, `renderer/vendor/*`, docs de divulgation réseau)
+
+### Distribution Windows
+
+- **Chromium embarqué de la mauvaise plateforme (P1, packaging)** : le build
+  croisé Linux → Windows embarquait le Chromium **Linux** (`chrome-linux`),
+  inutilisable dans l'exe Windows. Ajout de `tools/prepare-browsers.js` qui
+  télécharge le Chromium de la **plateforme cible** (`--platform=win` →
+  `chromium-win64.zip`) dans `node_modules/playwright-core/.local-browsers/`.
+  Scripts `browsers`, `browsers:win`, et hooks `prepack`/`predist`/`prebuild`.
+- **Icône d'application (P2)** : `build/icon.ico` multi-résolutions (16→256) et
+  `build/icon.png` générés par `tools/generate-icon.py` (`npm run icon`).
+- Installeur NSIS + version portable produits et vérifiés (en-tête PE, version
+  string/icône embarquées, Chromium Windows présent dans `resources/browsers/`).
+
+### Documentation
+
+- `README.md` : section build réécrite (build croisé Wine + Xvfb, plateforme du
+  Chromium, Windows x64 uniquement), scripts npm complétés, section intégrité
+  (SHA-256), clarification de la version portable.
+- `AGENTS.md` : sections Commandes / Build / Tools / Build croisé.
+
+### Tests
+
+- Suite : 955 → **984** assertions réussies.
+- Ajout de la section `[28]` : distribution Windows (icône multi-résolutions,
+  configuration electron-builder, scripts npm, `prepare-browsers` par plateforme,
+  chemin `PLAYWRIGHT_BROWSERS_PATH`).
+
 ## [Non publié] — Phase 3 : audit global A→Z (UI, intégrité, robustesse) — 2026-10-10
 
 ### Corrigé
