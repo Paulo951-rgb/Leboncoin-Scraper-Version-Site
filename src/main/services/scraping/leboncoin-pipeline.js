@@ -419,15 +419,17 @@ function normalizeAd(raw) {
     // Erreurs d'extraction collectées pour diagnostic (par-annonce).
     extractionErrors,
 
-    // Champs legacy pour rétro-compatibilité interne (renderer)
+    // Objet brut Leboncoin : conservé en mémoire car mergeDuplicates s'en sert
+    // pour garder la version la plus riche, et la résolution de description
+    // l'utilise. N'est JAMAIS exporté (stripInternalFields le retire).
     raw,
   };
 }
 
 // Fusionne deux annonces en préservant les valeurs non-nulles : on ne remplace
 // JAMAIS un champ déjà renseigné (non-null) par une valeur null provenant de
-// l'autre version. Évite de perdre category/rating/shipping extraits sur une
-// page quand l'autre occurrence ne les contient pas.
+// l'autre version. Évite de perdre un champ (ex. note vendeur, deliveryType)
+// extrait sur une page quand l'autre occurrence de l'annonce ne le contient pas.
 function mergeKeepingNonNull(existing, incoming) {
   const merged = { ...existing, ...incoming };
   for (const key of Object.keys(merged)) {

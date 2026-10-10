@@ -2040,6 +2040,35 @@ console.log('\n[22] Validation des paramètres');
   console.log('\n[22] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [23] NON-RÉGRESSION — parité des champs exportables renderer ↔ main process
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[23] Parité des champs exportables');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const { ALL_FIELD_KEYS } = require('../src/main/services/exporting/exportFields');
+  const scraperCode = fs.readFileSync(path.join(repoRoot, 'src/renderer/scraperModule.js'), 'utf8');
+  const m = scraperCode.match(/const EXPORT_FIELDS = \[([\s\S]*?)\];/);
+  assert(m, 'renderer: EXPORT_FIELDS introuvable');
+  const rendererKeys = [...m[1].matchAll(/key:\s*'([^']+)'/g)].map((x) => x[1]);
+
+  // Le renderer duplique la liste des champs exportables pour l'UI du profil
+  // Personnalisé. Si elle dérive de ALL_FIELD_KEYS, un champ coché côté UI est
+  // silencieusement filtré par getProfileFields (validation main process) et
+  // disparaît des exports → ce test échoue pour forcer la resynchronisation.
+  const missingInRenderer = ALL_FIELD_KEYS.filter((k) => !rendererKeys.includes(k));
+  const extraInRenderer = rendererKeys.filter((k) => !ALL_FIELD_KEYS.includes(k));
+  assert(missingInRenderer.length === 0, `renderer: champs manquants vs ALL_FIELD_KEYS: ${missingInRenderer.join(', ')}`);
+  assert(extraInRenderer.length === 0, `renderer: champs en trop vs ALL_FIELD_KEYS: ${extraInRenderer.join(', ')}`);
+
+  // Chaque champ sélectionné en Personnalisé doit survivre à getProfileFields.
+  const { getProfileFields } = require('../src/main/services/exporting/dataProfiles');
+  const kept = getProfileFields('custom', rendererKeys);
+  assert(kept.length === rendererKeys.length, 'dataProfiles: tous les champs renderer passent la validation custom');
+
+  console.log('\n[23] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }
