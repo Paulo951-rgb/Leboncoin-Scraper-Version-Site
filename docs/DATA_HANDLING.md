@@ -5,7 +5,7 @@ Ce document détaille les catégories de données traitées par **Leboncoin Scra
 ## Principes
 
 1. **Collecte minimale** : le logiciel ne collecte que les données présentes dans les réponses réseau du site ciblé. Aucune donnée n'est inventée ou extrapolée lors du scraping.
-2. **100% local** : les données restent sur l'ordinateur de l'utilisateur. Aucune transmission vers le cloud, aucune API externe, aucun envoi vers un service tiers. Les seules connexions réseau sortantes sont vers le site ciblé (scraping) et l'API de géocodage du gouvernement français (carte, optionnelle).
+2. **100% local** : les données restent sur l'ordinateur de l'utilisateur. Aucune transmission vers le cloud, aucune API externe, aucun envoi vers un service tiers. Les seules connexions réseau sortantes sont vers le site ciblé (scraping), l'API de géocodage du gouvernement français (carte, optionnelle) et des CDN publics servant à charger les bibliothèques d'interface (Chart.js, Leaflet) et les tuiles de carte OpenStreetMap. Aucune de ces connexions ne transmet les données scrapées.
 3. **Transparence** : chaque catégorie de données est documentée ci-dessous avec sa finalité et sa traçabilité.
 4. **Contrôle utilisateur** : l'utilisateur peut configurer quelles données sont conservées, exportées et affichées.
 
@@ -112,7 +112,17 @@ Les données restent **100% locales** :
 
 Les seules connexions réseau externes sont :
 - vers le site ciblé pour la collecte ;
-- vers l'API de géocodage du gouvernement français pour la carte (si activée).
+- vers l'API de géocodage du gouvernement français (geo.api.gouv.fr) pour
+  positionner les villes sur la carte (si la carte est utilisée) ;
+- vers des CDN publics pour charger les bibliothèques d'interface : Chart.js
+  (`cdn.jsdelivr.net`) et Leaflet (`unpkg.com`) au chargement de la fenêtre ;
+- vers les tuiles de fond de carte OpenStreetMap (`*.tile.openstreetmap.org`)
+  lorsque la carte est affichée.
+
+Aucune de ces connexions ne transmet vos données scrapées : les CDN ne servent
+qu'à charger du code et des tuiles de carte côté interface. Si l'appareil est
+hors ligne, l'application reste utilisable pour consulter les jobs déjà
+scrapés ; seuls la carte et les graphiques peuvent ne pas s'afficher.
 
 ## Informations sensibles
 

@@ -2069,6 +2069,23 @@ console.log('\n[23] Parité des champs exportables');
   console.log('\n[23] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [24] NON-RÉGRESSION — contrat export-meta (profil Personnalisé)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[24] Contrat export-meta');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const historyCode = fs.readFileSync(path.join(repoRoot, 'src/renderer/historyModule.js'), 'utf8');
+  // Le pipeline écrit `profileId` (version 2), pas `exportMode`. Le renderer doit
+  // accepter les deux, sinon le badge « Personnalisé » ne s'affiche jamais.
+  assert(/profileId\s*\|\|\s*j\.exportMeta\.exportMode/.test(historyCode), 'history: badge Personnalisé lit profileId (avec repli exportMode)');
+  const jobHistCode = fs.readFileSync(path.join(repoRoot, 'src/main/services/jobs/jobHistory.js'), 'utf8');
+  assert(/meta\.profileId\s*=\s*meta\.exportMode/.test(jobHistCode), 'jobHistory: normalise exportMode → profileId pour les anciens jobs');
+  assert(/profileId:\s*'default'/.test(jobHistCode), 'jobHistory: fallback exportMeta inclut profileId');
+
+  console.log('\n[24] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

@@ -170,16 +170,21 @@ class JobHistoryManager {
           json: fs.existsSync(jsonPath) ? jsonPath : null,
           txt: fs.existsSync(txtPath) ? txtPath : null,
         },
-        // Méta-données d'export (mode Défaut / Personnalisé + liste de champs).
-        // Chargées depuis export-meta.json (écrit par le pipeline). Fallback
-        // 'default' si le fichier manque (anciens jobs).
+        // Méta-données d'export (profil Défaut/Maximum/Personnalisé + liste de
+        // champs). Le pipeline écrit `profileId` (version 2) ; on retombe sur
+        // `exportMode` pour les anciens jobs et on garantit `profileId` pour un
+        // contrat homogène côté renderer.
         exportMeta: (() => {
           try {
             if (fs.existsSync(exportMetaPath)) {
-              return JSON.parse(fs.readFileSync(exportMetaPath, 'utf8'));
+              const meta = JSON.parse(fs.readFileSync(exportMetaPath, 'utf8'));
+              if (meta && typeof meta === 'object' && !meta.profileId && meta.exportMode) {
+                meta.profileId = meta.exportMode;
+              }
+              return meta;
             }
           } catch { /* silencieux : fallback default */ }
-          return { exportMode: 'default', exportFields: null };
+          return { profileId: 'default', exportMode: 'default', exportFields: null };
         })(),
       });
     }

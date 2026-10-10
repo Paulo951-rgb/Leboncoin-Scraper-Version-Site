@@ -29,8 +29,10 @@ const FAQ_DATA = [
     a: `<p>Le logiciel se connecte uniquement à :</p>
         <ul>
           <li><strong>leboncoin.fr</strong> pour récupérer les annonces ;</li>
-          <li>l'API de géocodage du gouvernement français (data.gouv) pour positionner les villes sur la carte.</li>
+          <li>l'API de géocodage du gouvernement français (geo.api.gouv.fr) pour positionner les villes sur la carte ;</li>
+          <li>des CDN publics (jsdelivr, unpkg) pour charger les bibliothèques d'affichage (graphiques, carte) et les tuiles OpenStreetMap lorsque la carte est affichée.</li>
         </ul>
+        <p>Vos annonces scrapées ne sont jamais envoyées à ces services : ils ne servent qu'à charger du code et des fonds de carte.</p>
         <p>Aucune clé API payante n'est requise.</p>`
   },
   {
