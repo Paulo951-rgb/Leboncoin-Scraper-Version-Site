@@ -58,6 +58,8 @@ Modules examinés :
 | P3-10 | P2 | `core/ipcHandlers.js` | `maxPages` pouvait valoir `NaN`/`0` → pagination illimitée | `parseInt` non borné | Bornage `[1,500]` | `[21b]` |
 | P3-11 | P2 | `main.js` | `webviewTag: true` inutile (aucun `<webview>`) | Vestige du module IA Studio | Désactivé ; handler conservé | `[20e]` |
 | P3-12 | P3 | `services/jobs/jobHistory.js` | Détection likes morte (chemins inexistants) | Modèle v1 vs v3 | Champ réel + replis rétro-compat | `[20g]` |
+| P3-13 | P2 | `renderer/historyModule.js` | Badge « Personnalisé » jamais affiché | Renderer lit `exportMeta.exportMode` mais le pipeline écrit `profileId` (v2) | Lecture `profileId` (repli `exportMode`) ; normalisation dans `jobHistory` | `[24]` |
+| P3-14 | P2 | `docs/DATA_HANDLING.md`, `helpModule.js` | Déclaration réseau incomplète (omet les CDN d'interface + tuiles OSM) | Doc non tenue à jour | Reformulation honnête | lecture |
 
 ### 3ter. Phase 1/2 (audit de stabilisation)
 
@@ -148,15 +150,16 @@ résolution DNS (fail-closed) — c'est documenté dans le code.
 
 ## 6. Tests exécutés
 
-- `node test/regression.test.js` → **894 réussis, 0 échoués** (base : 777 →
-  813 phase 1/2 → 861 → 894 phase 3).
+- `node test/regression.test.js` → **901 réussis, 0 échoués** (base : 777 →
+  813 phase 1/2 → 861 → 894 → 898 → 901 phase 3).
 - Phase 3 — ajouts : `[20]` navigation `[data-tab]`, absence de fuite interne
   (`raw`/`extractionErrors`/`livraison`/`mainPropre`) + vérification par fork
   réel, présence des éléments DOM (`statMedPrice`, `structureWarning`),
   `ErrorCodes.UNKNOWN`, `webviewTag:false`, appel `applySellerDataVisibility`,
   repli likes `[21]` dropdown sans ID fantôme, bornage `maxPages`, reset bandeau
   structure, destruction des graphiques `[22]` validation des paramètres
-  (clés inconnues, plages, énumérations, booléens stricts).
+  (clés inconnues, plages, énumérations, booléens stricts), `[23]` parité des
+  champs exportables renderer ↔ main process, `[24]` contrat `export-meta`.
 - Phase 3 — corrections d'assertions obsolètes : deux assertions exigeaient la
   présence de `livraison`/`mainPropre` dans les exports et une exigeait
   l'**absence** de `structureWarning`. Ces attentes contredisaient le modèle

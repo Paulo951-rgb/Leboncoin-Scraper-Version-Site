@@ -49,6 +49,12 @@ décrivent des modifications vérifiées (code + tests).
   des chemins inexistants (`statistiques.likes`/`likes_count`) ; lecture du
   champ réel `likes` avec repli rétro-compat pour les anciens jobs.
   (`services/jobs/jobHistory.js`)
+- **Badge « Personnalisé » jamais affiché (P2)** : `historyModule` testait
+  `exportMeta.exportMode === 'custom'`, mais le pipeline écrit `export-meta.json`
+  avec `profileId` (version 2). Le badge était donc toujours absent. Le renderer
+  lit désormais `profileId` (repli `exportMode`) et `jobHistory` normalise
+  `exportMode → profileId` pour les anciens jobs. (`renderer/historyModule.js`,
+  `services/jobs/jobHistory.js`)
 
 ### Sécurité
 
@@ -67,12 +73,17 @@ décrivent des modifications vérifiées (code + tests).
 - `docs/CHANGELOG.md` : présente entrée (Phase 3).
 - `docs/AUDIT_REPORT.md`, `docs/STABILITY_PLAN.md`, `docs/KNOWN_ISSUES.md`
   actualisés.
+- `docs/DATA_HANDLING.md` + FAQ (`helpModule.js`) : affirmation réseau corrigée.
+  La déclaration « seules connexions : leboncoin.fr + géocodage » omettait les
+  CDN d'interface (Chart.js via jsdelivr, Leaflet via unpkg) et les tuiles
+  OpenStreetMap. Reformulé honnêtement (aucune donnée scrapée transmise).
 
 ### Tests
 
-- Suite : 861 → **894** assertions réussies.
+- Suite : 861 → **901** assertions réussies.
 - Ajouts : blocs `[20]` (navigation, fuites d'export, DOM, error codes), `[21]`
-  (UI/robustesse) et `[22]` (validation des paramètres). Trois assertions
+  (UI/robustesse), `[22]` (validation des paramètres), `[23]` (parité des champs
+  exportables renderer ↔ main) et `[24]` (contrat `export-meta`). Trois assertions
   obsolètes corrigées : elles exigeaient la présence de `livraison`/`mainPropre`
   dans les exports et l'**absence** de `structureWarning`, ce qui contredisait
   le modèle documenté et cassait l'UI.
