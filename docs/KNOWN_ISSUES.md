@@ -31,6 +31,11 @@ stabilisation. Pour chaque entrée : impact, circonstances, prochaines étapes.
   est avéré ; sinon maintenir une checklist manuelle (démarrage de job, arrêt,
   suppression de job, changement de thème, mode hors-ligne, navigation entre
   tous les onglets).
+- **Mitigation partielle (phase 3)** : un test statique `[25]` vérifie que tous
+  les `getElementById('X')` littéraux des modules renderer ciblent un `id`
+  présent dans `index.html`, et que chaque `[data-tab="X"]` pointe vers un
+  `.tab-content` d'id `X` existant. Cela couvre la classe exacte des bugs P3-1
+  (navigation morte) et P3-5 (éléments DOM absents) sans exécuter de DOM.
 
 ## KI-3 — `urlSecurity` : couverture DNS incomplète sur le chemin navigateur *(P2, sécurité)*
 

@@ -2086,6 +2086,45 @@ console.log('\n[24] Contrat export-meta');
   console.log('\n[24] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [25] NON-RÉGRESSION — contrat DOM statique renderer ↔ index.html
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[25] Contrat DOM statique (index.html)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const rendererDir = path.join(repoRoot, 'src/renderer');
+  const html = fs.readFileSync(path.join(rendererDir, 'index.html'), 'utf8');
+  const domIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+
+  // 1) Tout getElementById('X') littéral d'un module renderer doit cibler un id
+  //    présent dans index.html. Classe de bug P3-5 : JS référençant des éléments
+  //    absents du DOM → fonctionnalité silencieusement inopérante.
+  const jsFiles = fs.readdirSync(rendererDir).filter((f) => f.endsWith('.js'));
+  const missing = [];
+  for (const f of jsFiles) {
+    const code = fs.readFileSync(path.join(rendererDir, f), 'utf8');
+    for (const m of code.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)) {
+      if (!domIds.has(m[1])) missing.push(`${f}:${m[1]}`);
+    }
+  }
+  assert(missing.length === 0, `renderer: IDs absents de index.html → ${missing.join(', ')}`);
+
+  // 2) Chaque bouton de navigation [data-tab="X"] doit cibler un .tab-content
+  //    d'id X existant. Classe de bug P3-1 : navigation pointant dans le vide.
+  const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map((m) => m[1]);
+  assert(tabs.length > 0, 'renderer: au moins un bouton [data-tab]');
+  for (const t of tabs) {
+    assert(domIds.has(t), `renderer: data-tab="${t}" cible un tab-content existant`);
+  }
+  // Les 5 onglets attendus (Scraper/Logs/Historique/Explorateur/Stats).
+  const expectedTabs = ['tab-scraper', 'tab-logs', 'tab-history', 'tab-explorer', 'tab-stats'];
+  for (const t of expectedTabs) {
+    assert(tabs.includes(t), `renderer: onglet ${t} présent dans la navigation`);
+  }
+
+  console.log('\n[25] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }
