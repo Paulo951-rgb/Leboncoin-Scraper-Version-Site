@@ -3,6 +3,40 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Distribution Windows fiable & Releases GitHub — 2026-10-10
+
+### Ajouté
+
+- **Workflow CI/CD Windows** (`.github/workflows/build-windows.yml`) : build sur
+  runner `windows-latest` (Node 20), déclenché sur `push` (main), `pull_request`,
+  `workflow_dispatch` et tags `v*`. Il prépare le Chromium Windows, lance
+  `npm run dist`, **vérifie l'installeur** (`tools/verify-dist.js`) puis publie
+  un artefact GitHub Actions. Sur tag de version uniquement, un job `release`
+  (`contents: write`) publie une **GitHub Release** avec les `.exe` et leurs
+  `.sha256`. Aucun jeton en dépôt.
+- **`tools/verify-dist.js`** : contrôle d'un dossier `dist/` (installeur NSIS,
+  `win-unpacked/` + `app.asar` + `ffmpeg.dll`, Chromium embarqué, en-tête PE,
+  taille minimale) ; écrit les empreintes `.sha256` ; échoue (code 1) si le build
+  est incomplet. Garde-fou anti-« installeur tronqué » avant toute publication.
+- Tests `[29]` : vérifient la présence/cohérence du workflow, des permissions et
+  du vérificateur (face positive et négative).
+- README : sections « Compilation automatique » et « Publier une version ».
+
+### Modifié
+
+- **NSIS durci** (`package.json`) : `perMachine:false` (installation **par
+  utilisateur, sans droits administrateur**), `allowElevation:true`,
+  `deleteAppDataOnUninstall:false`, `createStartMenuShortcut:true` (déjà
+  présent). Cibles NSIS + portable x64 conservées.
+- **`npmRebuild:false`** : aucun module natif dans le projet → évite un rebuild
+  inutile (piste de fiabilité du build).
+
+### Documenté
+
+- Cause de `Error: spawn UNKNOWN` : `NsisTarget.computeScriptAndSignUninstaller`
+  exécute l'installeur (très volumineux) pour extraire le désinstalleur
+  (`execWine` en build croisé). La compilation native sur Windows (CI) l'évite.
+
 ## [Non publié] — Phase 3 (suite) : carte, ressources locales, packaging Windows — 2026-10-10
 
 ### Corrigé

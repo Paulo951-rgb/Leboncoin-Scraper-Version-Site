@@ -28,6 +28,7 @@
   "build": {
     "appId": "com.leboncoin.scraper.pro",
     "productName": "Leboncoin Scraper Pro",
+    "npmRebuild": false,
     "directories": {
       "output": "dist",
       "buildResources": "build"
@@ -54,12 +55,15 @@
     },
     "nsis": {
       "oneClick": false,
+      "perMachine": false,
+      "allowElevation": true,
       "allowToChangeInstallationDirectory": true,
       "createDesktopShortcut": true,
       "createStartMenuShortcut": true,
       "shortcutName": "Leboncoin Scraper Pro",
       "installerIcon": "build/icon.ico",
-      "uninstallerIcon": "build/icon.ico"
+      "uninstallerIcon": "build/icon.ico",
+      "deleteAppDataOnUninstall": false
     },
     "portable": {
       "artifactName": "Leboncoin-Scraper-Pro-Portable-${version}.exe"

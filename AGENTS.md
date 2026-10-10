@@ -142,9 +142,36 @@ styles.css                   habillage + 13 thèmes + stat-cards
 
 ## Tests
 - `node test/regression.test.js` → suite de non-régression (syntaxe + stubs Electron).
-  Sections : logique métier, rendu, sécurité, `[27]` carte (logique pure), `[28]` distribution/packaging.
+  Sections : logique métier, rendu, sécurité, `[27]` carte (logique pure), `[28]` distribution/packaging,
+  `[29]` CI Windows (workflow + `verify-dist.js`).
 - Le test stub `electron` : BrowserWindow a `webContents.send` mais PAS `isDestroyed`.
 - Avant tout commit : `node --check` sur les fichiers modifiés + lancer la suite.
+
+## Intégration continue (GitHub Actions)
+- `.github/workflows/build-windows.yml` — runner **windows-latest**, Node 20.
+  - Déclencheurs : `push` (main), `pull_request`, `workflow_dispatch`, tags `v*`.
+  - `PLAYWRIGHT_SKIP_BROWSER_DOWNLOAD: '1'` + `npm run browsers:win` → un seul
+    Chromium (Windows), embarqué par `extraResources`.
+  - `npm run dist` puis **`node tools/verify-dist.js --dir=dist`** : le build
+    échoue si l'installeur, `ffmpeg.dll`, `app.asar` ou le Chromium embarqué
+    manquent (garde-fou anti-« installeur tronqué »).
+  - Artefact `windows-installer` (build de test) puis, **uniquement sur tag**,
+    job `release` (perms `contents: write`) qui publie une Release GitHub avec
+    `*.exe` + `*.sha256`.
+- **Pour publier une version** : `git tag vX.Y.Z && git push origin vX.Y.Z`
+  (voir README §Publication). Aucun jeton dans le dépôt (GITHUB_TOKEN auto).
+
+## Distribution Windows (NSIS + portable)
+- Cibles : NSIS x64 + portable x64 (`package.json` → `build.win.target`).
+- NSIS : `oneClick:false`, `perMachine:false` (**installation par utilisateur,
+  sans admin**), `allowElevation:true`, `createDesktopShortcut` +
+  `createStartMenuShortcut`, `deleteAppDataOnUninstall:false`.
+- `npmRebuild:false` : pas de module natif, on évite un rebuild inutile (piste
+  de fiabilité du build Windows).
+- L'erreur historique `Error: spawn UNKNOWN` provient de
+  `NsisTarget.computeScriptAndSignUninstaller` → `execWine(installerPath,…)`,
+  au moment d'exécuter l'installeur **très volumineux** pour extraire le
+  désinstalleur. Contournement : builder nativement sur **Windows** (spec).
 
 ## Sécurité (en place)
 - Renderer sandboxé (sandbox:true, contextIsolation:true, nodeIntegration:false)
@@ -168,6 +195,8 @@ styles.css                   habillage + 13 thèmes + stat-cards
 - Icône : `npm run icon` (régénère `build/icon.ico` depuis `tools/generate-icon.py`, nécessite Pillow)
 - Build .exe : `npm run dist` (electron-builder --win) → NSIS + portable dans `dist/`
 - Packaging local : `npm run pack` (electron-builder --dir)
+- Vérifier un build : `node tools/verify-dist.js --dir=dist` (échoue si incomplet, écrit les `.sha256`)
+- Publier une version : créer/pousser un tag `vX.Y.Z` (le workflow s'en charge)
 
 ## Build (electron-builder)
 Configuration dans `package.json` → clé `build` :
@@ -189,6 +218,10 @@ Configuration dans `package.json` → clé `build` :
   `chromium-mac.zip` / `chromium-linux.zip` (PAS `chromium-win.zip`), et le
   sous-dossier extrait est `chrome-win` / `chrome-mac` / `chrome-linux`.
 - `generate-icon.py` : génère `build/icon.ico` + `build/icon.png` (Pillow).
+- `verify-dist.js` : contrôle un dossier `dist/` après build (installeur NSIS,
+  `win-unpacked/` + `app.asar` + `ffmpeg.dll`, Chromium embarqué, en-tête PE,
+  taille minimale). Écrit les `.sha256`. Échoue (code 1) si un contrôle bloquant
+  échoue. Utilisé par la CI avant tout artefact/Release.
 
 ## Build croisé Windows depuis Linux
 `electron-builder --win` sous Linux exige **Wine** (édition des ressources de
