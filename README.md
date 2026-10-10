@@ -472,19 +472,21 @@ Résultat attendu : `=== RÉSULTAT : <N> réussis, 0 échoués ===`
 - Cliquez sur « Revérifier » dans le bandeau rouge après installation.
 
 ### Erreurs 403 / 429
-**Symptôme** : le scraping s'arrête avec un message 403 (interdit) ou 429 (trop de requêtes).
+**Symptôme** : le scraping ou l'enrichissement s'arrête avec un message 403 (accès refusé) ou 429 (limitation de débit).
 **Solution** :
-- Leboncoin bloque temporairement votre IP. Patientez quelques minutes avant de relancer.
-- Utilisez un proxy HTTP optionnel (champ « Proxy » dans le formulaire de scraping).
-- Réduisez la vitesse (Moyen au lieu de Rapide) et augmentez le délai entre les pages.
-- Après 3 blocages consécutifs, l'enrichissement s'arrête automatiquement et sauvegarde les données collectées.
+- Leboncoin a refusé ou limité temporairement les requêtes. **Patientez quelques minutes** avant de relancer — aucune reprise automatique agressive n'est faite (le `Retry-After` du serveur est respecté lorsqu'il est fourni).
+- Réduisez la vitesse (Moyen au lieu de Rapide) : la concurrence et les délais par défaut sont volontairement modérés pour limiter les rafales de requêtes.
+- Après 3 blocages 403/429 consécutifs, l'enrichissement s'arrête automatiquement et **sauvegarde les annonces déjà extraites**.
+- Le job est alors signalé « **succès partiel** » (jamais « succès ») : les annonces restent exportables même si certaines descriptions manquent.
+- Aucun contournement (proxy d'évasion, rotation d'identité) n'est utilisé : le refus est rapporté tel quel.
 
 ### CAPTCHA
 **Symptôme** : une fenêtre visible s'ouvre avec un captcha (Arkose/FunCaptcha/Cloudflare).
 **Solution** :
 - Résolvez le captcha manuellement dans la fenêtre.
-- L'application détecte automatiquement la résolution (polling du contenu toutes les 2s + confirmation anti-faux-positif).
-- La fenêtre se ferme et le scraping reprend tout seul — vous n'avez rien d'autre à faire.
+- L'application détecte automatiquement la disparition du défi (polling du contenu toutes les 2s + confirmation anti-faux-positif), **puis vérifie réellement l'accès** (statut HTTP de la ressource) avant de reprendre.
+- Si l'accès reste refusé (HTTP 403/429) malgré la disparition visuelle du défi, l'opération s'arrête proprement avec un message explicite — aucun job « réussi » trompeur et aucune boucle de fenêtres.
+- La session n'est persistée que si l'accès est effectivement confirmé.
 
 ### Session expirée
 **Symptôme** : un job qui fonctionnait ne capture plus rien.

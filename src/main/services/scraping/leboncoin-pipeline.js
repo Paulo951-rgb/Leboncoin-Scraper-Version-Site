@@ -698,6 +698,7 @@ class DescriptionEnricher {
     // (limitation) pour un code de sortie honnête.
     let stopReason = null; // 'HTTP_403' | 'HTTP_429' | null
     let retryAfterMs = null;
+    let pendingRetryAfterMs = null; // appliqué une seule fois (pause inter-batch)
     const concurrency = this.opts.concurrency || 10;
     let batchIndex = 0;
 
@@ -754,7 +755,8 @@ class DescriptionEnricher {
           if (isRateLimited) {
             stopReason = 'HTTP_429';
             const ra = typeof res.retryAfter === 'string' ? res.retryAfter : null;
-            retryAfterMs = ra && /^\d+$/.test(ra.trim()) ? parseInt(ra.trim(), 10) * 1000 : retryAfterMs;
+            const parsedRa = ra && /^\d+$/.test(ra.trim()) ? parseInt(ra.trim(), 10) * 1000 : null;
+            if (parsedRa != null) { retryAfterMs = parsedRa; pendingRetryAfterMs = parsedRa; }
             this.logger.warn(`🛑 [${done}/${targets.length}] [${blockCode}] Requête limitée (HTTP 429) sur ${ad.id}${ra ? ` — Retry-After ${ra}` : ''}`);
           } else {
             if (stopReason !== 'HTTP_429') stopReason = 'HTTP_403';
@@ -782,10 +784,11 @@ class DescriptionEnricher {
         }
       }
 
-      if (done % 10 === 0) writeOutputs(ads);
-      // Rate limiting adaptatif : on signale le résultat du batch au limiteur
-      // qui ajuste dynamiquement le délai (backoff exponentiel si blocage,
-      // accélération si succès rapides). Remplace le randomDelay fixe.
+      if (done % 10 === 0 || done === targets.length) writeOutputs(ads);
+      // Rate limiting adaptatif : on ajuste le délai selon le résultat du batch
+      // (backoff exponentiel si blocage, accélération si succès rapides) SANS
+      // attendre ici — l'attente est faite juste après, explicitement, afin de
+      // pouvoir respecter l'en-tête Retry-After fourni par le serveur.
       const batchDuration = Date.now() - t0Batch;
       const batchHadBlock = batch.some((ad) => results[ad.id]?.error === 'BLOCKED_403' || results[ad.id]?.error === 'BLOCKED_429');
       const batchHadError = batch.some((ad) => {
@@ -793,12 +796,25 @@ class DescriptionEnricher {
         return e && e !== 'BLOCKED_403' && e !== 'BLOCKED_429' && !e.startsWith('HTTP_');
       });
       if (batchHadBlock) {
-        await this.rateLimiter.waitAfter({ durationMs: batchDuration, blocked: true, status: 403 });
+        await this.rateLimiter.waitAfter({ durationMs: batchDuration, blocked: true, status: 403, noWait: true });
       } else if (batchHadError) {
-        await this.rateLimiter.waitAfter({ durationMs: batchDuration, error: true });
+        await this.rateLimiter.waitAfter({ durationMs: batchDuration, error: true, noWait: true });
       } else {
-        await this.rateLimiter.waitAfter({ durationMs: batchDuration });
+        await this.rateLimiter.waitAfter({ durationMs: batchDuration, noWait: true });
       }
+
+      // Respect de Retry-After : si le serveur a fourni un délai, on attend AU
+      // MOINS ce délai avant de lancer le batch suivant (aucune reprise avant
+      // l'heure indiquée, aucune accélération au-delà).
+      const adaptiveDelay = this.rateLimiter.currentDelayMs();
+      const waitMs = Math.max(adaptiveDelay, pendingRetryAfterMs || 0);
+      if (waitMs > 0 && i + concurrency < targets.length) {
+        this.logger.debug(`[DescriptionEnricher] Pause inter-batch ${Math.round(waitMs)}ms${pendingRetryAfterMs ? ` (Retry-After ${Math.round(pendingRetryAfterMs)}ms respecté)` : ''} — prochain délai adaptatif ${adaptiveDelay}ms.`);
+        await sleep(waitMs);
+      }
+      // Le délai Retry-After du serveur ne s'applique qu'une fois (le suivant
+      // repart sur le backoff adaptatif courant).
+      pendingRetryAfterMs = null;
 
       if (done > 0 && done % this.opts.recycleContextEvery === 0 && i + concurrency < targets.length) {
         this.logger.info(`🔄 Purge mémoire RAM (${done} items)...`);
@@ -830,11 +846,16 @@ class DescriptionEnricher {
     writeOutputs(ads);
     this.logger.info(`Session terminée : ${successCount}/${targets.length} récupérées.`);
     this.logger.debug(`[DescriptionEnricher] Bilan final : ${successCount} réussies | ${notFoundCount} sans description trouvée | ${blockedCount} bloquées (403/429) | ${httpErrorCount} autres erreurs HTTP/fetch | arrêt préventif : ${this.shouldStopAll ? 'OUI' : 'non'}.`);
+    // Résumé structuré (compteurs explicites : enrichies vs en attente).
+    const pendingCount = Math.max(0, targets.length - successCount - notFoundCount - blockedCount - httpErrorCount);
+    this.logger.info(`[METRICS] Descriptions : ${successCount} enrichies | ${notFoundCount} absentes | ${blockedCount} bloquées | ${httpErrorCount} erreurs HTTP | ${pendingCount} non traitées (${targets.length} cibles).`);
     return {
       successCount,
       notFoundCount,
       blockedCount,
       httpErrorCount,
+      pendingCount,
+      targetsCount: targets.length,
       stopReason,
       retryAfterMs,
       partial: this.shouldStopAll || stopReason != null || this.cancelled,
@@ -964,9 +985,9 @@ async function main() {
   // La concurrence est le nombre de workers persistants qui traitent les annonces
   // en parallèle (queue dynamique : dès qu'un worker termine, il prend la suivante).
   const SPEED_PRESETS = {
-    moyen:          { concurrency: 10, minDelayMs: 500,  maxDelayMs: 1000, mode: 'parallèle' },
-    rapide:         { concurrency: 15, minDelayMs: 200,  maxDelayMs: 600,  mode: 'parallèle' },
-    'ultra-rapide': { concurrency: 25, minDelayMs: 50,   maxDelayMs: 300,  mode: 'parallèle' },
+    moyen:          { concurrency: 8,  minDelayMs: 1500, maxDelayMs: 4000, mode: 'parallèle' },
+    rapide:         { concurrency: 10, minDelayMs: 1000, maxDelayMs: 3000, mode: 'parallèle' },
+    'ultra-rapide': { concurrency: 12, minDelayMs: 700,  maxDelayMs: 2500, mode: 'parallèle' },
   };
   const preset = SPEED_PRESETS[opts.speed] || SPEED_PRESETS.moyen;
   opts.concurrency = preset.concurrency;
@@ -1057,6 +1078,9 @@ async function main() {
 
     writeOutputs(ads);
     logger.info(`Étape HAR -> Annonces terminée : ${ads.length} annonces extraites.`);
+    // Métriques structurées (compteurs cohérents pour le résumé de session) :
+    // annonces brutes → normalisées → uniques après déduplication.
+    logger.info(`[METRICS] ${ads.length} annonces extraites uniques (${normalized.length} normalisées, ${Math.max(0, normalized.length - ads.length)} doublons fusionnés).`);
     const dtLivraison = ads.filter((a) => a.deliveryType === 'livraison').length;
     const dtMainPropre = ads.filter((a) => a.deliveryType === 'main_propre').length;
     const dtLesDeux = ads.filter((a) => a.deliveryType === 'les_deux').length;
