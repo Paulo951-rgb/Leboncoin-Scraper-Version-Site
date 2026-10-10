@@ -81,6 +81,39 @@ Codes de sortie du pipeline (contrat avec `pipelineRunner.js`) : `0` succès,
 `1` erreur fatale, `2` aucune donnée exploitable, `3` enrichissement arrêté sur
 HTTP 403, `4` enrichissement arrêté sur HTTP 429.
 
+## Anti-débit (rate limiting) — ne PAS réintroduire la régression
+
+`AdaptiveRateLimiter` (`src/main/utils/rateLimiter.js`) utilise `baseDelayMs`
+comme délai **MINIMAL** (`minDelayMs` par défaut = `baseDelayMs`). Il est
+instancié par `DescriptionEnricher` avec `baseDelayMs = opts.minDelayMs` (le
+preset de vitesse) et `maxDelayMs = opts.maxDelayMs`. Conséquence : **si les
+presets mettent des délais de base trop faibles, le backoff après blocage est
+lui aussi minuscule** (ex. base 50 ms → backoff max 250 ms), ce qui ne freine
+rien face à une limitation de débit.
+
+- Presets actuels : `moyen {8, 1500, 4000}`, `rapide {10, 1000, 3000}`,
+  `ultra-rapide {12, 700, 2500}` (`{concurrency, minDelayMs, maxDelayMs}`).
+- Le backoff saute directement à `base × 2^max(N,4)` (×16) dès le premier
+  blocage — cf. commit de diagnostic 403.
+- `Retry-After` (429) est appliqué comme **pause inter-batch**
+  `max(délai adaptatif, Retry-After)` : aucune reprise avant le délai indiqué.
+- Le commit `a861165` (« restore fast parallel scraping ») avait remonté la
+  concurrence à 25 et baissé les délais à 50 ms → **régression de débit** à ne
+  pas reproduire.
+
+## Compteurs de session (résumé) — motifs exacts
+
+`ipcHandlers` compte via les lignes du pipeline. Motifs à respecter si les
+libellés changent :
+
+- Annonces extraites : `/(\d+)\s+annonces?\s+extraites?/i` (ligne
+  « Étape HAR -> Annonces terminée : N annonces extraites. ») ET
+  `/(\d+)\s+unique\(s\)\s+en\s+sortie/i` (ligne `[METRICS]`).
+- Doublons : `/(\d+)\s+doublon/i`, cumulés en `Math.max` (idempotent).
+- L'ancien motif `annonce\(s\)\s+(?:unique|extrait)` ne matchait PAS la ligne
+  réelle (mot au singulier) → `adsFound` restait à 0 (« 236 extraites / 0
+  trouvée »). Ne pas y revenir sans vérifier la ligne émise.
+
 ## Champs d'annonce (schéma scraping pur)
 
 Structure produite par `normalizeAd()` (sans aucune dépendance IA) :

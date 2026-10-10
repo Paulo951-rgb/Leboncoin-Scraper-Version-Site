@@ -2502,6 +2502,71 @@ console.log('\n[30] Audit : accès réel, 403/429, états honnêtes');
   console.log('\n[30] OK');
 }
 
+// --- 31. Audit 403 : compteurs cohérents + backoff agressif + Retry-After ---
+// Corrige la contradiction « N extraites / 0 trouvée » du résumé et durcit la
+// limitation de débit (rafale de 403 après une série de succès).
+console.log('\n[31] Audit 403 : compteurs + backoff + Retry-After');
+{
+  const { AdaptiveRateLimiter } = require('../src/main/utils/rateLimiter');
+
+  // 31.1 Compteurs : le résumé doit compter les annonces réellement extraites.
+  // L'ancien motif ne matchait PAS la ligne réelle du pipeline.
+  const oldRe = /(\d+)\s+annonce\(s\)\s+(?:unique|extrait)/i;
+  assert(!oldRe.test('Étape HAR -> Annonces terminée : 236 annonces extraites.'),
+    '[31] ancien motif ne matchait pas la ligne réelle (preuve du bug compteur)');
+  // Nouveaux motifs (extraits d\'ipcHandlers) :
+  const extractRe = /(\d+)\s+annonces?\s+extraites?/i;
+  const uniqueRe = /(\d+)\s+unique\(s\)\s+en\s+sortie/i;
+  const m1 = 'Étape HAR -> Annonces terminée : 236 annonces extraites.'.match(extractRe);
+  assert(m1 && m1[1] === '236', '[31] compteur: « N annonces extraites » → N');
+  const m2 = '[METRICS] 236 annonces extraites uniques (300 normalisées, 64 doublons fusionnés).'.match(extractRe);
+  assert(m2 && m2[1] === '236', '[31] compteur: ligne [METRICS] → N uniques');
+  const m3 = '[mergeDuplicates] 300 annonce(s) en entrée | 0 sans ID | 64 doublon(s) fusionné(s) | 236 unique(s) en sortie.'.match(uniqueRe);
+  assert(m3 && m3[1] === '236', '[31] compteur: « N unique(s) en sortie » → N');
+  // Le compteur ne doit PAS rester à 0 quand un vrai total est présent.
+  assert(parseInt(m1[1], 10) === 236, '[31] compteur: 236 ≠ 0 (plus de contradiction)');
+
+  // 31.2 Backoff adaptatif agressif : après un blocage, le délai doit bondir
+  // (≈ base × 2^4 au minimum) et ne jamais dépasser le maximum.
+  const rl = new AdaptiveRateLimiter({ baseDelayMs: 800, maxDelayMs: 8000, logger: null });
+  await rl.waitAfter({ durationMs: 100, blocked: true, status: 403, noWait: true });
+  assert(rl.currentDelayMs() >= 8000, '[31] backoff: un blocage → délai porté au maximum (≥8000ms)');
+  // noWait : ne bloque pas (retour quasi immédiat).
+  const t0 = Date.now();
+  await rl.waitAfter({ durationMs: 100, blocked: true, status: 429, noWait: true });
+  assert(Date.now() - t0 < 200, '[31] backoff: noWait n\'attend pas (attente gérée par l\'appelant)');
+  // Sans noWait : agit comme une pause.
+  const rl2 = new AdaptiveRateLimiter({ baseDelayMs: 600, maxDelayMs: 6000, logger: null });
+  await rl2.waitAfter({ durationMs: 100, blocked: true, status: 403, noWait: true });
+  assert(rl2.currentDelayMs() >= 6000, '[31] backoff: base 600 → plafond atteint après blocage');
+
+  // 31.3 Pipeline : parallélisme modéré + presets durcis + Retry-After appliqué.
+  const pipe = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
+  assert(/noWait: true/.test(pipe), '[31] pipeline: ajuste le délai sans attendre (pause inter-batch explicite)');
+  assert(/pendingRetryAfterMs/.test(pipe) && /Math\.max\(adaptiveDelay, pendingRetryAfterMs \|\| 0\)/.test(pipe),
+    '[31] pipeline: pause inter-batch = max(délai adaptatif, Retry-After)');
+  // Presets : concurrence bornée et délais de base non triviaux.
+  const presetMatch = pipe.match(/moyen:\s*\{ concurrency: (\d+),\s*minDelayMs: (\d+)/);
+  assert(presetMatch && parseInt(presetMatch[1], 10) <= 12, '[31] presets: concurrence « moyen » bornée (≤12)');
+  assert(presetMatch && parseInt(presetMatch[2], 10) >= 700, '[31] presets: délai de base « moyen » ≥ 700ms (anti-rafale)');
+  assert(/'ultra-rapide':\s*\{ concurrency: \d+,\s*minDelayMs: \d+/.test(pipe), '[31] presets: ultra-rapide présent');
+
+  // 31.4 Métriques structurées émises par le pipeline.
+  assert(/\[METRICS\] \$\{ads\.length\} annonces extraites uniques/.test(pipe), '[31] pipeline: ligne [METRICS] annonces extraites');
+  assert(/\[METRICS\] Descriptions :/.test(pipe), '[31] pipeline: ligne [METRICS] descriptions (enrichies/bloquées/en attente)');
+  assert(/pendingCount/.test(pipe), '[31] pipeline: compteur « non traitées » (en attente)');
+
+  // 31.5 ipcHandlers : compteurs cohérents (extraction + uniques + doublons).
+  const ipcC = fs.readFileSync(path.join(__dirname, '..', 'src/main/core/ipcHandlers.js'), 'utf8');
+  assert(/annonces\?\\s\+extraites\?/.test(ipcC) || /annonces\?\\\\s\+extraites\?/.test(ipcC) || ipcC.includes('annonces?\\s+extraites?'),
+    '[31] ipcHandlers: motif extraction « annonces extraites » présent');
+  assert(/unique\\\(s\\\)\\s\+en\\s\+sortie/.test(ipcC) || ipcC.includes('unique\\(s\\)\\s+en\\s+sortie'),
+    '[31] ipcHandlers: motif « unique(s) en sortie » présent');
+  assert(/Math\.max\(sessionStats\.adsDuplicates/.test(ipcC), '[31] ipcHandlers: doublons cumulés de façon idempotente (pas de double comptage)');
+
+  console.log('\n[31] OK');
+}
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

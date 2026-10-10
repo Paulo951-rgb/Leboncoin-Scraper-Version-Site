@@ -3,6 +3,50 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Diagnostic 403 : compteurs, backoff, harmonisation UA — 2026-10-10
+
+### Diagnostiqué (preuves dans le code / l'historique)
+
+- **Régression de débit (a861165)** : le commit « restore fast parallel scraping
+  mode » a remonté la concurrence (10/15/25) et effondré les délais de base
+  (500/200/50 ms). Comme `AdaptiveRateLimiter` utilise `baseDelayMs` comme
+  délai **minimal de repli** (`minDelayMs = baseDelayMs`), le backoff maximal
+  après blocage tombait à **250 ms** (ultra-rapide) au lieu de plusieurs
+  secondes → aucune protection réelle contre les rafales de 403. Correctif :
+  concurrence bornée (8/10/12) + délais de base 1500/1000/700 ms + plancher de
+  backoff élevé (×16 dès le premier blocage).
+- **Compteurs faux (contradiction « 236 extraites / 0 trouvée »)** :
+  `ipcHandlers` cherchait `/(\d+)\s+annonce\(s\)\s+(?:unique|extrait)/`, mais le
+  pipeline émet « `N annonces extraites` » (mot au singulier). Le motif ne
+  matchait donc **jamais** → `adsFound` restait à 0. Correctif : motifs
+  « annonces? extraites? », « N unique(s) en sortie », + ligne `[METRICS]`.
+
+### Corrigé
+
+- `leboncoin-pipeline.js` : presets de vitesse durcis (concurrence bornée,
+  délais de base relevés) ; `Retry-After` appliqué comme **pause inter-batch**
+  (`max(délai adaptatif, Retry-After)`), non bloquante pour les autres cibles ;
+  métriques structurées `[METRICS]` (annonces extraites uniques, descriptions
+  enrichies/absentes/bloquées/non traitées).
+- `rateLimiter.js` : `waitAfter` accepte `noWait` (l'appelant gère l'attente) ;
+  backoff agressif dès le premier blocage.
+- `ipcHandlers.js` : compteurs d'annonces et de doublons corrigés (idempotents),
+  résumé de session clarifié (« Annonces extraites (uniques) », « Blocages
+  d'accès (HTTP 403/429) »).
+
+### Étudié, non concluant (pas de modification)
+
+- **Harmonisation UA capture↔enrichissement** : l'UA du capture (`captureUserAgent`)
+  est déjà transmis au pipeline (`--user-agent` → `opts.userAgent`). Aucun bug UA
+  trouvé.
+- **Cookies de session** : le correctif d'empoisonnement (`0cc25bb`) est toujours
+  présent (session globale sauvegardée après la 1re page réussie, jamais
+  écrasée ; l'enrichisseur privilégie `global-session.json`). Aucune régression
+  trouvée.
+- La séquence « ~80 succès puis rafale de 403 » n'est pas causée par un changement
+  de contexte (le contexte n'est recyclé qu'à 200 items) mais par une **limitation
+  de débit** sous une cadence trop agressive — traitée par les correctifs ci-dessus.
+
 ## [Non publié] — Audit complet : accès réel, 403/429, états honnêtes — 2026-10-10
 
 ### Corrigé (bugs confirmés par lecture du code)

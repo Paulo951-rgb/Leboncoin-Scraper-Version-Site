@@ -99,11 +99,11 @@ function setupIpcHandlers(getMainWindow) {
       `  ⏱  Durée totale        : ${formatDuration(dur)}`,
       `  📄 Pages demandées      : ${sessionStats.pagesRequested}`,
       `  📄 Pages scrapées      : ${sessionStats.pagesScraped}`,
-      `  🔍 Annonces trouvées    : ${sessionStats.adsFound}`,
+      `  🔍 Annonces extraites   : ${sessionStats.adsFound} (uniques)`,
       `  ✅ Annonces conservées  : ${sessionStats.adsKept}`,
       `  🔄 Doublons fusionnés   : ${sessionStats.adsDuplicates}`,
       `  📝 Descriptions extraites: ${sessionStats.descriptionsExtracted}`,
-      `  🛑 Pages bloquées (403) : ${sessionStats.descriptionsBlocked}`,
+      `  🛑 Blocages d'accès     : ${sessionStats.descriptionsBlocked} (HTTP 403/429)`,
       `  ❌ Erreurs              : ${sessionStats.errors}`,
       `  ⚠️  Avertissements      : ${sessionStats.warnings}`,
       `  🐛 Logs debug           : ${sessionStats.debugs}`,
@@ -243,17 +243,30 @@ function setupIpcHandlers(getMainWindow) {
           stoppedEarly = true;
           sessionStats.stoppedEarly = true;
         }
-        // Compter les annonces extraites
+        // Compter les annonces extraites. Le pipeline émet :
+        //   « Étape HAR -> Annonces terminée : N annonces extraites. » (info)
+        //   « [mergeDuplicates] M annonce(s) en entrée | … | N unique(s) en sortie. » (debug)
+        // L'ancien motif exigeait « annonce(s) unique|extrait ». Il ne matchait
+        // PAS « N annonces extraites » (mot au singulier alors que le nombre peut
+        // être pluriel) → adsFound restait à 0 dans le résumé alors que la capture
+        // avait bien extrait N annonces (contradiction « 236 extraites / 0 trouvée »).
+        const extractMatch = msg.match(/(\d+)\s+annonces?\s+extraites?/i);
+        if (extractMatch) sessionStats.adsFound = Math.max(sessionStats.adsFound, parseInt(extractMatch[1], 10));
+        const uniqueMatch = msg.match(/(\d+)\s+unique\(s\)\s+en\s+sortie/i);
+        if (uniqueMatch) sessionStats.adsFound = Math.max(sessionStats.adsFound, parseInt(uniqueMatch[1], 10));
+        // Compat : ancien format « N annonce(s) unique(s) ».
         const adsMatch = msg.match(/(\d+)\s+annonce\(s\)\s+(?:unique|extrait)/i);
         if (adsMatch) sessionStats.adsFound = Math.max(sessionStats.adsFound, parseInt(adsMatch[1], 10));
-        // Compter les doublons fusionnés
+        // Compter les doublons fusionnés. Deux formats possibles :
+        //   « N doublon(s) fusionné(s) » (pipeline)  |  « N doublon » (générique)
         const dupMatch = msg.match(/(\d+)\s+doublon/i);
-        if (dupMatch) sessionStats.adsDuplicates += parseInt(dupMatch[1], 10);
+        if (dupMatch) sessionStats.adsDuplicates = Math.max(sessionStats.adsDuplicates, parseInt(dupMatch[1], 10));
         // Compter les descriptions extraites (✅ [X/Y])
         const descMatch = msg.match(/✅\s*\[(\d+)\/\d+\]/);
         if (descMatch) sessionStats.descriptionsExtracted = Math.max(sessionStats.descriptionsExtracted, parseInt(descMatch[1], 10));
-        // Compter les blocages 403
-        if (msg.includes('Bloqué (HTTP 403') || msg.includes('BLOCKED_403')) sessionStats.descriptionsBlocked++;
+        // Compter les blocages d'accès (403/429) — formats actuels et historiques.
+        if (msg.includes('Accès refusé (HTTP 403)') || msg.includes('Bloqué (HTTP 403') || msg.includes('BLOCKED_403')) sessionStats.descriptionsBlocked++;
+        else if (msg.includes('Requête limitée (HTTP 429)') || msg.includes('BLOCKED_429')) sessionStats.descriptionsBlocked++;
         // Blocage d'accès structuré remonté par l'enrichissement (403/429/arrêt
         // préventif) → succès partiel honnête.
         if (msg.includes('[HTTP_ACCESS_REFUSED]') || msg.includes('[HTTP_429]') || msg.includes('[HTTP_RATE_LIMITED]')) {
