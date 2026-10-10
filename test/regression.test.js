@@ -184,11 +184,15 @@ await new Promise((resolve) => {
     assert(stdout.includes('[DEBUG]'), 'pipeline DEBUG logs present');
     assert(stdout.includes('annonces extraites'), 'pipeline reports ads extracted');
     const ads = JSON.parse(fs.readFileSync(path.join(tmpOut, 'annonces.json'), 'utf8'));
-    assert(ads[0].livraison === false, 'pipeline extracts livraison as boolean (backward compat)');
+    // Convention du modèle : `livraison`/`mainPropre` sont des champs INTERNES
+    // unifiés en `deliveryType` et ne doivent PAS figurer dans les exports.
+    assert(!('livraison' in ads[0]), 'pipeline: livraison absent de l\'export (unifié en deliveryType)');
+    assert(!('mainPropre' in ads[0]), 'pipeline: mainPropre absent de l\'export (unifié en deliveryType)');
+    assert(!('raw' in ads[0]), 'pipeline: objet brut `raw` absent de l\'export');
+    assert(!('extractionErrors' in ads[0]), 'pipeline: `extractionErrors` absent de l\'export');
     assert(ads[0].city === 'Lyon', 'pipeline extracts city');
     assert(ads[0].vendeurType === 'particulier', 'pipeline extracts vendeurType');
     assert(ads[0].vendeurNote === 4.8, 'pipeline extracts vendeurNote from owner.rating');
-    assert(ads[0].mainPropre === null, 'pipeline does NOT infer mainPropre from livraison (backward compat)');
     assert(ads[0].deliveryType === 'aucun', 'pipeline extracts deliveryType (livraison=false, mainPropre=null → aucun)');
     assert(ads[0].prix === 150, 'pipeline extracts prix');
     assert(ads[0].vendeurNom === 'Jean', 'pipeline extracts vendeurNom');
@@ -623,7 +627,11 @@ assert(!/id="searchProvider"/.test(htmlCode), 'index.html: select searchProvider
 assert(!/id="searchApiKey"/.test(htmlCode), 'index.html: champ searchApiKey supprimé');
 assert(!/id="triggerMarketBtn"/.test(htmlCode), 'index.html: bouton triggerMarketBtn supprimé');
 assert(!/id="marketProgressContainer"/.test(htmlCode), 'index.html: conteneur marketProgress supprimé');
-assert(!/id="structureWarning"/.test(htmlCode), 'index.html: avertissement structure supprimé');
+// structureWarning est conservé et DOIT exister : logsModule l'utilise pour
+// afficher l'alerte de changement de structure JSON côté Leboncoin. Son absence
+// rendait l'affichage silencieusement inopérant.
+assert(/id="structureWarning"/.test(htmlCode), 'index.html: bandeau structureWarning présent (utilisé par logsModule)');
+assert(/id="structureWarningText"/.test(htmlCode), 'index.html: texte structureWarning présent');
 assert(!/id="cfgAiConcurrency"/.test(htmlCode), 'index.html: champ cfgAiConcurrency supprimé');
 assert(!/aistudio\.google\.com/.test(htmlCode), 'index.html: URL AI Studio supprimée');
 assert(!/127\.0\.0\.1:11434/.test(htmlCode), 'index.html: connect-src Ollama supprimé du CSP');
@@ -1920,6 +1928,56 @@ console.log('\n[18d] Export field-key compatibility (non-régression)');
   const legacyJson = filterAdByFields(legacyAd, getProfileFields('default'));
   assert(legacyJson.ville === 'Paris', 'export JSON: rétro-compat clé ville directe');
   assert(legacyJson.codePostal === '75001', 'export JSON: rétro-compat clé codePostal directe');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [20] NON-RÉGRESSION — bugs de la Phase 3 (audit global A→Z)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[20] Bugs Phase 3 (audit global)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+
+  // [20a] Navigation onglets : app.js doit cibler [data-tab], pas .tab-btn.
+  //       L'ancien sélecteur .tab-btn ne correspondait à AUCUN élément (sidebar
+  //       == .nav-item) → aucun listener de navigation attaché.
+  const appCode = read('src/renderer/app.js');
+  assert(/querySelectorAll\('\[data-tab\]'\)/.test(appCode), 'app.js: navigation cible [data-tab] (bug onglets morts corrigé)');
+  assert(!/querySelectorAll\('\.tab-btn'\)/.test(appCode), 'app.js: ancien sélecteur .tab-btn supprimé');
+  const htmlCode = read('src/renderer/index.html');
+  assert(!/class="tab-btn/.test(htmlCode), 'index.html: plus de boutons .tab-btn (sidebar = nav-item)');
+
+  // [20b] Champs internes absents des exports (raw, extractionErrors, livraison, mainPropre).
+  const pipelineCode = read('src/main/services/scraping/leboncoin-pipeline.js');
+  assert(/INTERNAL_AD_FIELDS\s*=\s*\[[^\]]*'raw'/.test(pipelineCode), 'pipeline: raw listé comme champ interne');
+  assert(/'extractionErrors'/.test(pipelineCode) && /stripInternalFields/.test(pipelineCode), 'pipeline: extractionErrors nettoyé avant écriture');
+  assert(/'livraison'/.test(pipelineCode) && /'mainPropre'/.test(pipelineCode), 'pipeline: livraison/mainPropre exclus des exports');
+  assert(/cleanAds/.test(pipelineCode), 'pipeline: writeOutputs utilise cleanAds');
+
+  // [20c] Éléments DOM référencés mais absents (statMedPrice, structureWarning).
+  assert(/id="statMedPrice"/.test(htmlCode), 'index.html: carte Prix Médian présente (statMedPrice)');
+  assert(/id="structureWarning"/.test(htmlCode), 'index.html: bandeau structureWarning présent');
+  assert(/id="structureWarningText"/.test(htmlCode), 'index.html: texte structureWarning présent');
+
+  // [20d] ErrorCodes.UNKNOWN défini (référencé par PipelineRunner en fallback).
+  const { ErrorCodes: EC } = require('../src/main/services/scraping/errorCodes');
+  assert(EC.UNKNOWN === 'UNKNOWN', 'errorCodes: UNKNOWN défini (évite code [undefined])');
+
+  // [20e] webviewTag désactivé sur la fenêtre principale (hors commentaires).
+  const mainCode = read('src/main/main.js');
+  const mainCodeNoComments = mainCode.replace(/\/\/[^\n]*/g, '');
+  assert(/webviewTag:\s*false/.test(mainCodeNoComments), 'main.js: webviewTag désactivé (surface d\'attaque réduite)');
+  assert(!/webviewTag:\s*true/.test(mainCodeNoComments), 'main.js: plus de webviewTag:true actif');
+
+  // [20f] Visibilité données vendeur appliquée dès le chargement (sinon classe
+  //       seller-data-hidden jamais positionnée).
+  assert(/async function refreshSellerDataSetting\(\)[\s\S]*?applySellerDataVisibility\(\);/.test(appCode), 'app.js: refreshSellerDataSetting applique applySellerDataVisibility');
+
+  // [20g] buildAdHistory : replis rétro-compat likes.
+  const jhCode = read('src/main/services/jobs/jobHistory.js');
+  assert(/ad\.likes\s*\?\?[\s\S]*statistiques\?\.likes/.test(jhCode), 'jobHistory: repli rétro-compat likes (statistiques.likes)');
+
+  console.log('\n[20] OK');
 })();
 
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);

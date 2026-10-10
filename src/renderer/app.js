@@ -32,6 +32,7 @@ async function refreshSellerDataSetting() {
   } catch {
     includeSellerData = true;
   }
+  applySellerDataVisibility();
 }
 
 function applySellerDataVisibility() {
@@ -52,10 +53,14 @@ function applySellerDataVisibility() {
 
 refreshSellerDataSetting();
 
-// ONGLETS
-document.querySelectorAll('.tab-btn').forEach((btn) => {
+// ONGLETS — les boutons de navigation portent l'attribut data-tab (classes
+// .nav-item). L'ancien sélecteur `.tab-btn` ne correspondait plus à aucun élément
+// depuis la refonte de la sidebar → AUCUN listener de navigation n'était attaché
+// et cliquer un onglet ne faisait rien. On cible [data-tab] pour rester aligné
+// sur le raccourci clavier et robuste à un futur changement de classe.
+document.querySelectorAll('[data-tab]').forEach((btn) => {
   btn.addEventListener('click', () => {
-    document.querySelectorAll('.tab-btn').forEach((b) => b.classList.remove('active'));
+    document.querySelectorAll('[data-tab]').forEach((b) => b.classList.remove('active'));
     document.querySelectorAll('.tab-content').forEach((c) => c.classList.remove('active'));
 
     btn.classList.add('active');

@@ -115,7 +115,12 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
       sandbox: true,
-      webviewTag: true,
+      // webviewTag désactivé : aucun <webview> n'est utilisé par l'UI (l'ancien
+      // module IA Studio, seul consommateur, a été retiré). Laisser ce tag actif
+      // augmentait inutilement la surface d'attaque (création de webview depuis
+      // le renderer). Le handler will-attach-webview reste en défense en
+      // profondeur au cas où il serait réactivé.
+      webviewTag: false,
     },
   });
 

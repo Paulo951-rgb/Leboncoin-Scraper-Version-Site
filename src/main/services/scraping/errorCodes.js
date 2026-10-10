@@ -55,6 +55,10 @@ const ErrorCodes = {
   AD_DELETED: 'AD_DELETED',
   AD_MODIFIED: 'AD_MODIFIED',
   AD_EMPTY: 'AD_EMPTY',
+
+  // Générique : échec non classé (ex. code de sortie pipeline inattendu).
+  // Utilisé par PipelineRunner pour le fallback de classification.
+  UNKNOWN: 'UNKNOWN',
 };
 
 /**

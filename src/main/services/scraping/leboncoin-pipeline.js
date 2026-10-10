@@ -869,6 +869,30 @@ function writeOutputsFactory(outDir, opts) {
 
   const exportOptions = opts.includeSellerData === false ? { excludeSellerData: true } : {};
 
+  // Champs internes au pipeline : nécessaires en mémoire (mergeDuplicates se sert
+  // de `raw` pour garder la version la plus riche), mais ils ne doivent JAMAIS
+  // être écrits dans annonces.json/txt. `raw` est l'objet brut Leboncoin complet
+  // (jusqu'à plusieurs Ko par annonce, avec des données non prévues au modèle) et
+  // `extractionErrors` est un détail de diagnostic interne. En profil Maximum,
+  // filterAdByFields renvoie l'objet tel quel (fields=null) → ces champs
+  // fuiteraient sans ce nettoyage. `livraison`/`mainPropre` sont les deux
+  // booléens internes unifiés en `deliveryType` : la convention du modèle impose
+  // qu'ils n'apparaissent plus dans les exports. Aucun consommateur (renderer,
+  // historique, stats) ne les lit.
+  const INTERNAL_AD_FIELDS = ['raw', 'extractionErrors', 'livraison', 'mainPropre'];
+
+  function stripInternalFields(ad) {
+    if (!ad || typeof ad !== 'object') return ad;
+    let copy = ad;
+    for (const k of INTERNAL_AD_FIELDS) {
+      if (k in copy) {
+        if (copy === ad) copy = { ...ad };
+        delete copy[k];
+      }
+    }
+    return copy;
+  }
+
   return function writeOutputs(ads) {
     for (const ad of ads) {
       if (ad && typeof ad === 'object') {
@@ -876,12 +900,16 @@ function writeOutputsFactory(outDir, opts) {
       }
     }
     const fields = _resolveFields();
+    // Nettoie les champs internes AVANT tout filtrage/écriture. En profil Maximum
+    // (fields=null) les annonces sont écrites telles quelles, donc ce nettoyage
+    // est le seul rempart contre la fuite de `raw`/`extractionErrors`.
+    const cleanAds = ads.map(stripInternalFields);
     // JSON : on filtre chaque annonce pour respecter strictement le profil
     // (seuls les champs sélectionnés sont conservés en clair). fields=null
     // signifie « toutes les clés » (profil Maximum) → objet tel quel.
-    const jsonAds = fields ? ads.map((a) => filterAdByFields(a, fields, exportOptions)) : ads;
+    const jsonAds = fields ? cleanAds.map((a) => filterAdByFields(a, fields, exportOptions)) : cleanAds;
     writeWithChecksum(jsonPath, jsonAds, null, 2);
-    atomicWriteFileSync(txtPath, ads.map((a, i) => toReadableBlock(a, i, fields, exportOptions)).join('\n'));
+    atomicWriteFileSync(txtPath, cleanAds.map((a, i) => toReadableBlock(a, i, fields, exportOptions)).join('\n'));
     // Méta-données d'export (profil + liste de champs).
     const meta = {
       version: 2,

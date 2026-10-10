@@ -56,8 +56,13 @@ function buildAdHistory(allJobs) {
       };
     }
 
-    const likesFirst = first.ad.statistiques?.likes ?? first.ad.likes_count;
-    const likesLast = last.ad.statistiques?.likes ?? last.ad.likes_count;
+    // Likes : le modèle plat expose `likes`. On conserve des replis vers les
+    // anciennes formes (`statistiques.likes`, `likes_count`) pour rester
+    // compatible avec les jobs exportés par d'anciennes versions — sans ces
+    // replis, la détection de changement de likes ne lisait QUE les données
+    // actuelles et ignorait silencieusement les anciens jobs.
+    const likesFirst = first.ad.likes ?? first.ad.statistiques?.likes ?? first.ad.likes_count ?? null;
+    const likesLast = last.ad.likes ?? last.ad.statistiques?.likes ?? last.ad.likes_count ?? null;
     let likesChange = null;
     if (likesFirst != null && likesLast != null && likesFirst !== likesLast) {
       likesChange = {
@@ -68,8 +73,11 @@ function buildAdHistory(allJobs) {
       };
     }
 
-    const statusFirst = first.ad.dates?.statut || first.ad.status;
-    const statusLast = last.ad.dates?.statut || last.ad.status;
+    // Statut : le modèle actuel n'expose pas de statut ; on lit un éventuel
+    // `status` plat ou l'ancien `dates.statut` (rétro-compat). En l'absence des
+    // deux, statusChange reste null.
+    const statusFirst = first.ad.status ?? first.ad.dates?.statut ?? null;
+    const statusLast = last.ad.status ?? last.ad.dates?.statut ?? null;
     const statusChange = (statusFirst != null && statusLast != null && statusFirst !== statusLast)
       ? { avant: statusFirst, apres: statusLast }
       : null;

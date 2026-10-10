@@ -288,14 +288,24 @@ async function renderMap(ads) {
 
 
 function renderCharts(ads, transactionStats) {
-  if (typeof Chart === 'undefined' || ads.length === 0) return;
-
   // Garde contre les canvas absents du DOM
   const priceDistCanvas = document.getElementById('priceDistChart');
   const sellerCanvas = document.getElementById('sellerChart');
   const citiesCanvas = document.getElementById('topCitiesChart');
   const transactionCanvas = document.getElementById('transactionChart');
   if (!priceDistCanvas || !sellerCanvas || !citiesCanvas || !transactionCanvas) return;
+
+  // Aucune donnée (ou Chart.js indisponible) : on DÉTRUIT les instances
+  // existantes pour ne pas laisser à l'écran les graphiques de la session
+  // précédente (données fantômes). L'ancien early-return laissait les anciens
+  // graphiques affichés quand on bascule sur une session sans annonces.
+  if (typeof Chart === 'undefined' || ads.length === 0) {
+    if (priceDistChartInstance) { priceDistChartInstance.destroy(); priceDistChartInstance = null; }
+    if (sellerChartInstance) { sellerChartInstance.destroy(); sellerChartInstance = null; }
+    if (topCitiesChartInstance) { topCitiesChartInstance.destroy(); topCitiesChartInstance = null; }
+    if (transactionChartInstance) { transactionChartInstance.destroy(); transactionChartInstance = null; }
+    return;
+  }
 
   // 1) Distribution des prix (histogramme)
   const prices = [];
