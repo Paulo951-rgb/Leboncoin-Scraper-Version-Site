@@ -253,6 +253,12 @@
               <button id="clearLogsBtn" class="btn btn-small">Vider</button>
             </div>
           </div>
+          <!-- Bandeau affiché par logsModule quand le pipeline détecte un
+               changement de structure JSON côté Leboncoin (champ critique manquant). -->
+          <div id="structureWarning" class="chromium-warning hidden" style="margin-bottom:12px;">
+            <span class="chromium-warning-icon">🧩</span>
+            <span id="structureWarningText" class="chromium-warning-text"></span>
+          </div>
           <div id="logsConsole" class="console"></div>
           <div id="logStats" class="logs-stats font-small text-muted">0 log(s) affiché(s)</div>
         </div>
@@ -452,6 +458,12 @@
               <span class="stat-title">Prix Moyen</span>
               <span id="statAvgPrice" class="stat-value">-</span>
               <span id="statAvgPriceSub" class="stat-sub">toutes annonces</span>
+            </div>
+            <div class="stat-card stat-card-accent stat-card-violet">
+              <span class="stat-icon">📊</span>
+              <span class="stat-title">Prix Médian</span>
+              <span id="statMedPrice" class="stat-value">-</span>
+              <span id="statMedPriceSub" class="stat-sub">50% au-dessus / en-dessous</span>
             </div>
             <div class="stat-card stat-card-accent stat-card-violet">
               <span class="stat-icon">📦</span>

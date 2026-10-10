@@ -177,6 +177,22 @@ Configuration dans `package.json` → clé `build` :
 - Au runtime, `main.js` pointe `PLAYWRIGHT_BROWSERS_PATH` vers `process.resourcesPath/browsers` si l'app est packagée.
 
 ## Pièges corrigés (à ne PAS réintroduire)
+- **Navigation onglets** : `app.js` DOIT cibler `[data-tab]` (pas l'ancienne
+  classe `.tab-btn`) pour attacher les écouteurs de navigation. La sidebar
+  utilise `.nav-item`. Un sélecteur désaligné = onglets totalement morts
+  (aucun écouteur posé), sans erreur visible en console.
+- **Champs internes d'annonce** : `raw`, `extractionErrors`, `livraison` et
+  `mainPropre` sont INTERNES et ne doivent JAMAIS être écrits dans
+  `annonces.json`/`annonces.txt`. `writeOutputsFactory` les retire via
+  `stripInternalFields` (indispensable en profil Maximum où les annonces sont
+  écrites telles quelles). `livraison`/`mainPropre` sont unifiés en
+  `deliveryType` : les réexposer viole le modèle documenté.
+- **Paramètres renderer** : `config:save` DOIT passer par
+  `sanitizeSettingsPatch` (clés connues + type/plage). Fusionner le patch brut
+  permettait d'injecter des clés et de régler `autoCleanJobsDays` à une valeur
+  énorme → purge massive de jobs au démarrage suivant.
+- **`ErrorCodes.UNKNOWN`** : existe et sert de repli dans `pipelineRunner` pour
+  les codes de sortie non classés. Ne pas le retirer (sinon logs `[undefined]`).
 - **AdStats médiane** : pour un nombre pair de prix, moyenne des deux valeurs
   centrales (le renderer fait pareil dans renderStatsView). Ne pas reprendre
   `validPrices[Math.floor(n/2)]` qui est faux pour les longueurs paires.

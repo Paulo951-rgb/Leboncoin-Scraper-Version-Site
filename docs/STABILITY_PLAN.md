@@ -40,6 +40,23 @@
 | P2-5 | **Annulation pendant l'enrichissement** (P1 résiduel) : code 130 + SIGINT coopératif + résultats partiels | ✅ | Tests `[3b2]`, `[3f]` |
 | P2-6 | Cas limites médiane + validation données | ✅ | Tests AdStats |
 
+### Phase 3 (audit global A→Z — UI, intégrité, robustesse)
+
+| Lot | Objet | Statut | Vérification |
+|---|---|---|---|
+| P3-1 | Correction navigation onglets morte (`.tab-btn` → `[data-tab]`) | ✅ | Test `[20a]` |
+| P3-2 | Fin des fuites d'export (`raw`, `extractionErrors`, `livraison`, `mainPropre`) | ✅ | Test `[20b]` + fork réel |
+| P3-3 | `ErrorCodes.UNKNOWN` manquant | ✅ | Test `[20d]` |
+| P3-4 | Éléments DOM absents (`statMedPrice`, `structureWarning`) | ✅ | Tests `[20c]` |
+| P3-5 | Visibilité données vendeur appliquée au chargement | ✅ | Test `[20f]` |
+| P3-6 | Bandeau structure réarmé à chaque run | ✅ | Test `[21c]` |
+| P3-7 | Graphiques détruits sur session vide | ✅ | Test `[21d]` |
+| P3-8 | Dropdown session : pas d'ID fantôme après suppression | ✅ | Test `[21a]` |
+| P3-9 | Bornage `maxPages` [1,500] | ✅ | Test `[21b]` |
+| P3-10 | Validation des paramètres renderer (`sanitizeSettingsPatch`) | ✅ | Tests `[22]` |
+| P3-11 | `webviewTag` désactivé (surface d'attaque) | ✅ | Test `[20e]` |
+| P3-12 | Historique likes rétro-compat (`likes` + replis) | ✅ | Test `[20g]` |
+
 ## 3. Dépendances entre corrections
 
 - La correction d'annulation (Lot 6) dépend du contrat de sortie du pipeline
@@ -52,8 +69,8 @@
 ## 4. Critères de validation (rappel de la définition de « stable »)
 
 - [x] Aucun P0 connu non résolu.
-- [x] Aucun P1 bloquant restant (annulation corrigée).
-- [x] Tests de non-régression verts (813/813).
+- [x] Aucun P1 bloquant restant (annulation + navigation onglets corrigées).
+- [x] Tests de non-régression verts (894/894).
 - [x] Nouveaux tests pour chaque bug corrigé.
 - [x] Syntaxe vérifiée sur tous les fichiers modifiés.
 - [x] Interfaces IPC appariées (preload ↔ handlers).

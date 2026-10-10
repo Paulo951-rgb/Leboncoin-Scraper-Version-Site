@@ -184,11 +184,15 @@ await new Promise((resolve) => {
     assert(stdout.includes('[DEBUG]'), 'pipeline DEBUG logs present');
     assert(stdout.includes('annonces extraites'), 'pipeline reports ads extracted');
     const ads = JSON.parse(fs.readFileSync(path.join(tmpOut, 'annonces.json'), 'utf8'));
-    assert(ads[0].livraison === false, 'pipeline extracts livraison as boolean (backward compat)');
+    // Convention du modèle : `livraison`/`mainPropre` sont des champs INTERNES
+    // unifiés en `deliveryType` et ne doivent PAS figurer dans les exports.
+    assert(!('livraison' in ads[0]), 'pipeline: livraison absent de l\'export (unifié en deliveryType)');
+    assert(!('mainPropre' in ads[0]), 'pipeline: mainPropre absent de l\'export (unifié en deliveryType)');
+    assert(!('raw' in ads[0]), 'pipeline: objet brut `raw` absent de l\'export');
+    assert(!('extractionErrors' in ads[0]), 'pipeline: `extractionErrors` absent de l\'export');
     assert(ads[0].city === 'Lyon', 'pipeline extracts city');
     assert(ads[0].vendeurType === 'particulier', 'pipeline extracts vendeurType');
     assert(ads[0].vendeurNote === 4.8, 'pipeline extracts vendeurNote from owner.rating');
-    assert(ads[0].mainPropre === null, 'pipeline does NOT infer mainPropre from livraison (backward compat)');
     assert(ads[0].deliveryType === 'aucun', 'pipeline extracts deliveryType (livraison=false, mainPropre=null → aucun)');
     assert(ads[0].prix === 150, 'pipeline extracts prix');
     assert(ads[0].vendeurNom === 'Jean', 'pipeline extracts vendeurNom');
@@ -623,7 +627,11 @@ assert(!/id="searchProvider"/.test(htmlCode), 'index.html: select searchProvider
 assert(!/id="searchApiKey"/.test(htmlCode), 'index.html: champ searchApiKey supprimé');
 assert(!/id="triggerMarketBtn"/.test(htmlCode), 'index.html: bouton triggerMarketBtn supprimé');
 assert(!/id="marketProgressContainer"/.test(htmlCode), 'index.html: conteneur marketProgress supprimé');
-assert(!/id="structureWarning"/.test(htmlCode), 'index.html: avertissement structure supprimé');
+// structureWarning est conservé et DOIT exister : logsModule l'utilise pour
+// afficher l'alerte de changement de structure JSON côté Leboncoin. Son absence
+// rendait l'affichage silencieusement inopérant.
+assert(/id="structureWarning"/.test(htmlCode), 'index.html: bandeau structureWarning présent (utilisé par logsModule)');
+assert(/id="structureWarningText"/.test(htmlCode), 'index.html: texte structureWarning présent');
 assert(!/id="cfgAiConcurrency"/.test(htmlCode), 'index.html: champ cfgAiConcurrency supprimé');
 assert(!/aistudio\.google\.com/.test(htmlCode), 'index.html: URL AI Studio supprimée');
 assert(!/127\.0\.0\.1:11434/.test(htmlCode), 'index.html: connect-src Ollama supprimé du CSP');
@@ -1920,6 +1928,236 @@ console.log('\n[18d] Export field-key compatibility (non-régression)');
   const legacyJson = filterAdByFields(legacyAd, getProfileFields('default'));
   assert(legacyJson.ville === 'Paris', 'export JSON: rétro-compat clé ville directe');
   assert(legacyJson.codePostal === '75001', 'export JSON: rétro-compat clé codePostal directe');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [20] NON-RÉGRESSION — bugs de la Phase 3 (audit global A→Z)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[20] Bugs Phase 3 (audit global)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+
+  // [20a] Navigation onglets : app.js doit cibler [data-tab], pas .tab-btn.
+  //       L'ancien sélecteur .tab-btn ne correspondait à AUCUN élément (sidebar
+  //       == .nav-item) → aucun listener de navigation attaché.
+  const appCode = read('src/renderer/app.js');
+  assert(/querySelectorAll\('\[data-tab\]'\)/.test(appCode), 'app.js: navigation cible [data-tab] (bug onglets morts corrigé)');
+  assert(!/querySelectorAll\('\.tab-btn'\)/.test(appCode), 'app.js: ancien sélecteur .tab-btn supprimé');
+  const htmlCode = read('src/renderer/index.html');
+  assert(!/class="tab-btn/.test(htmlCode), 'index.html: plus de boutons .tab-btn (sidebar = nav-item)');
+
+  // [20b] Champs internes absents des exports (raw, extractionErrors, livraison, mainPropre).
+  const pipelineCode = read('src/main/services/scraping/leboncoin-pipeline.js');
+  assert(/INTERNAL_AD_FIELDS\s*=\s*\[[^\]]*'raw'/.test(pipelineCode), 'pipeline: raw listé comme champ interne');
+  assert(/'extractionErrors'/.test(pipelineCode) && /stripInternalFields/.test(pipelineCode), 'pipeline: extractionErrors nettoyé avant écriture');
+  assert(/'livraison'/.test(pipelineCode) && /'mainPropre'/.test(pipelineCode), 'pipeline: livraison/mainPropre exclus des exports');
+  assert(/cleanAds/.test(pipelineCode), 'pipeline: writeOutputs utilise cleanAds');
+
+  // [20c] Éléments DOM référencés mais absents (statMedPrice, structureWarning).
+  assert(/id="statMedPrice"/.test(htmlCode), 'index.html: carte Prix Médian présente (statMedPrice)');
+  assert(/id="structureWarning"/.test(htmlCode), 'index.html: bandeau structureWarning présent');
+  assert(/id="structureWarningText"/.test(htmlCode), 'index.html: texte structureWarning présent');
+
+  // [20d] ErrorCodes.UNKNOWN défini (référencé par PipelineRunner en fallback).
+  const { ErrorCodes: EC } = require('../src/main/services/scraping/errorCodes');
+  assert(EC.UNKNOWN === 'UNKNOWN', 'errorCodes: UNKNOWN défini (évite code [undefined])');
+
+  // [20e] webviewTag désactivé sur la fenêtre principale (hors commentaires).
+  const mainCode = read('src/main/main.js');
+  const mainCodeNoComments = mainCode.replace(/\/\/[^\n]*/g, '');
+  assert(/webviewTag:\s*false/.test(mainCodeNoComments), 'main.js: webviewTag désactivé (surface d\'attaque réduite)');
+  assert(!/webviewTag:\s*true/.test(mainCodeNoComments), 'main.js: plus de webviewTag:true actif');
+
+  // [20f] Visibilité données vendeur appliquée dès le chargement (sinon classe
+  //       seller-data-hidden jamais positionnée).
+  assert(/async function refreshSellerDataSetting\(\)[\s\S]*?applySellerDataVisibility\(\);/.test(appCode), 'app.js: refreshSellerDataSetting applique applySellerDataVisibility');
+
+  // [20g] buildAdHistory : replis rétro-compat likes.
+  const jhCode = read('src/main/services/jobs/jobHistory.js');
+  assert(/ad\.likes\s*\?\?[\s\S]*statistiques\?\.likes/.test(jhCode), 'jobHistory: repli rétro-compat likes (statistiques.likes)');
+
+  console.log('\n[20] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [21] NON-RÉGRESSION — Phase 3 lot 2 (UI, robustesse, paramètres)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[21] Phase 3 lot 2 (UI/robustesse)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+
+  // [21a] Dropdown session ne doit pas restaurer une valeur inexistante (job supprimé).
+  const expCode = read('src/renderer/explorerModule.js');
+  assert(/stillExists\s*=\s*selectedVal[\s\S]*?some\(/.test(expCode), 'explorer: populateSessionDropdown vérifie l\'existence de la valeur (pas de vue vide après suppression)');
+
+  // [21b] maxPages borné (parseInt('')/0 ne doit pas désactiver la limite de pagination).
+  const ipcCode = read('src/main/core/ipcHandlers.js');
+  assert(/Math\.min\(500,\s*Math\.max\(1,\s*parseInt\(pages/.test(ipcCode), 'ipcHandlers: maxPages clampé [1,500] (évite pagination illimitée)');
+
+  // [21c] scraperModule réarme le bandeau structureWarning au démarrage d'un run.
+  const scraperCode = read('src/renderer/scraperModule.js');
+  assert(/structureWarning[\s\S]*?classList\.add\('hidden'\)/.test(scraperCode), 'scraper: structureWarning masqué au démarrage d\'un run');
+
+  // [21d] renderCharts détruit les instances sur session vide (pas de graphiques fantômes).
+  const statsCode = read('src/renderer/statsModule.js');
+  assert(/ads\.length === 0\)\s*\{[\s\S]*?\.destroy\(\)/.test(statsCode), 'stats: renderCharts détruit les instances quand aucune donnée');
+
+  console.log('\n[21] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [22] NON-RÉGRESSION — validation des paramètres (surface IPC config:save)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[22] Validation des paramètres');
+(() => {
+  const { sanitizeSettingsPatch } = require('../src/main/core/settings');
+
+  // Clés inconnues rejetées (pas d'injection arbitraire dans user-settings.json)
+  assert(Object.keys(sanitizeSettingsPatch({ evilKey: 'x', __proto__: { polluted: 1 } })).length === 0, 'settings: clés inconnues rejetées');
+
+  // autoCleanJobsDays hors plage rejeté (évite purge massive)
+  assert(sanitizeSettingsPatch({ autoCleanJobsDays: 999999 }).autoCleanJobsDays === undefined, 'settings: autoCleanJobsDays hors plage rejeté');
+  assert(sanitizeSettingsPatch({ autoCleanJobsDays: -5 }).autoCleanJobsDays === undefined, 'settings: autoCleanJobsDays négatif rejeté');
+  assert(sanitizeSettingsPatch({ autoCleanJobsDays: 30 }).autoCleanJobsDays === 30, 'settings: autoCleanJobsDays valide accepté');
+
+  // scrapeSpeed énuméré
+  assert(sanitizeSettingsPatch({ scrapeSpeed: 'turbo' }).scrapeSpeed === undefined, 'settings: scrapeSpeed inconnu rejeté');
+  assert(sanitizeSettingsPatch({ scrapeSpeed: 'rapide' }).scrapeSpeed === 'rapide', 'settings: scrapeSpeed valide accepté');
+
+  // booléens stricts
+  assert(sanitizeSettingsPatch({ headless: 'yes' }).headless === undefined, 'settings: headless non booléen rejeté');
+  assert(sanitizeSettingsPatch({ headless: false }).headless === false, 'settings: headless=false accepté');
+
+  // pageDelayMs borné
+  assert(sanitizeSettingsPatch({ pageDelayMs: 999999 }).pageDelayMs === undefined, 'settings: pageDelayMs hors plage rejeté');
+  assert(sanitizeSettingsPatch({ pageDelayMs: 1000 }).pageDelayMs === 1000, 'settings: pageDelayMs valide accepté');
+
+  // patch non-objet
+  assert(Object.keys(sanitizeSettingsPatch(null)).length === 0, 'settings: patch null → objet vide');
+
+  console.log('\n[22] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [23] NON-RÉGRESSION — parité des champs exportables renderer ↔ main process
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[23] Parité des champs exportables');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const { ALL_FIELD_KEYS } = require('../src/main/services/exporting/exportFields');
+  const scraperCode = fs.readFileSync(path.join(repoRoot, 'src/renderer/scraperModule.js'), 'utf8');
+  const m = scraperCode.match(/const EXPORT_FIELDS = \[([\s\S]*?)\];/);
+  assert(m, 'renderer: EXPORT_FIELDS introuvable');
+  const rendererKeys = [...m[1].matchAll(/key:\s*'([^']+)'/g)].map((x) => x[1]);
+
+  // Le renderer duplique la liste des champs exportables pour l'UI du profil
+  // Personnalisé. Si elle dérive de ALL_FIELD_KEYS, un champ coché côté UI est
+  // silencieusement filtré par getProfileFields (validation main process) et
+  // disparaît des exports → ce test échoue pour forcer la resynchronisation.
+  const missingInRenderer = ALL_FIELD_KEYS.filter((k) => !rendererKeys.includes(k));
+  const extraInRenderer = rendererKeys.filter((k) => !ALL_FIELD_KEYS.includes(k));
+  assert(missingInRenderer.length === 0, `renderer: champs manquants vs ALL_FIELD_KEYS: ${missingInRenderer.join(', ')}`);
+  assert(extraInRenderer.length === 0, `renderer: champs en trop vs ALL_FIELD_KEYS: ${extraInRenderer.join(', ')}`);
+
+  // Chaque champ sélectionné en Personnalisé doit survivre à getProfileFields.
+  const { getProfileFields } = require('../src/main/services/exporting/dataProfiles');
+  const kept = getProfileFields('custom', rendererKeys);
+  assert(kept.length === rendererKeys.length, 'dataProfiles: tous les champs renderer passent la validation custom');
+
+  console.log('\n[23] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [24] NON-RÉGRESSION — contrat export-meta (profil Personnalisé)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[24] Contrat export-meta');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const historyCode = fs.readFileSync(path.join(repoRoot, 'src/renderer/historyModule.js'), 'utf8');
+  // Le pipeline écrit `profileId` (version 2), pas `exportMode`. Le renderer doit
+  // accepter les deux, sinon le badge « Personnalisé » ne s'affiche jamais.
+  assert(/profileId\s*\|\|\s*j\.exportMeta\.exportMode/.test(historyCode), 'history: badge Personnalisé lit profileId (avec repli exportMode)');
+  const jobHistCode = fs.readFileSync(path.join(repoRoot, 'src/main/services/jobs/jobHistory.js'), 'utf8');
+  assert(/meta\.profileId\s*=\s*meta\.exportMode/.test(jobHistCode), 'jobHistory: normalise exportMode → profileId pour les anciens jobs');
+  assert(/profileId:\s*'default'/.test(jobHistCode), 'jobHistory: fallback exportMeta inclut profileId');
+
+  console.log('\n[24] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [25] NON-RÉGRESSION — contrat DOM statique renderer ↔ index.html
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[25] Contrat DOM statique (index.html)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const rendererDir = path.join(repoRoot, 'src/renderer');
+  const html = fs.readFileSync(path.join(rendererDir, 'index.html'), 'utf8');
+  const domIds = new Set([...html.matchAll(/id="([^"]+)"/g)].map((m) => m[1]));
+
+  // 1) Tout getElementById('X') littéral d'un module renderer doit cibler un id
+  //    présent dans index.html. Classe de bug P3-5 : JS référençant des éléments
+  //    absents du DOM → fonctionnalité silencieusement inopérante.
+  const jsFiles = fs.readdirSync(rendererDir).filter((f) => f.endsWith('.js'));
+  const missing = [];
+  for (const f of jsFiles) {
+    const code = fs.readFileSync(path.join(rendererDir, f), 'utf8');
+    for (const m of code.matchAll(/getElementById\(['"]([^'"]+)['"]\)/g)) {
+      if (!domIds.has(m[1])) missing.push(`${f}:${m[1]}`);
+    }
+  }
+  assert(missing.length === 0, `renderer: IDs absents de index.html → ${missing.join(', ')}`);
+
+  // 2) Chaque bouton de navigation [data-tab="X"] doit cibler un .tab-content
+  //    d'id X existant. Classe de bug P3-1 : navigation pointant dans le vide.
+  const tabs = [...html.matchAll(/data-tab="([^"]+)"/g)].map((m) => m[1]);
+  assert(tabs.length > 0, 'renderer: au moins un bouton [data-tab]');
+  for (const t of tabs) {
+    assert(domIds.has(t), `renderer: data-tab="${t}" cible un tab-content existant`);
+  }
+  // Les 5 onglets attendus (Scraper/Logs/Historique/Explorateur/Stats).
+  const expectedTabs = ['tab-scraper', 'tab-logs', 'tab-history', 'tab-explorer', 'tab-stats'];
+  for (const t of expectedTabs) {
+    assert(tabs.includes(t), `renderer: onglet ${t} présent dans la navigation`);
+  }
+
+  console.log('\n[25] OK');
+})();
+
+// ═══════════════════════════════════════════════════════════════════════════
+// [26] NON-RÉGRESSION — contrat IPC preload ↔ handlers main
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[26] Contrat IPC preload ↔ main');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const read = (p) => fs.readFileSync(path.join(repoRoot, p), 'utf8');
+  const preload = read('src/main/preload.js');
+  const widgetPreload = read('src/main/widgetPreload.js');
+  const ipc = read('src/main/core/ipcHandlers.js');
+  const main = read('src/main/main.js');
+
+  const chansFrom = (code, fn) => new Set([...code.matchAll(new RegExp(`ipcRenderer\\.(?:${fn})\\(['"]([^'"]+)['"]`, 'g'))].map((m) => m[1]));
+  const preloadChans = chansFrom(preload, 'send|invoke');
+  const widgetChans = chansFrom(widgetPreload, 'send|invoke');
+  const handled = new Set([
+    ...[...ipc.matchAll(/ipcMain\.(?:on|handle)\(['"]([^'"]+)['"]/g)].map((m) => m[1]),
+    ...[...main.matchAll(/ipcMain\.(?:on|handle)\(['"]([^'"]+)['"]/g)].map((m) => m[1]),
+  ]);
+
+  // Tout canal émis par le preload doit avoir un handler ipcMain (sinon l'appel
+  // renderer reste sans réponse). Classe de bug : canal renommé d'un seul côté.
+  const unhandled = [...preloadChans, ...widgetChans].filter((c) => !handled.has(c));
+  assert(unhandled.length === 0, `IPC: canaux preload sans handler → ${unhandled.join(', ')}`);
+
+  // Les événements poussés vers le renderer doivent être exposés par onLog/
+  // onProgress/onStatusChange du preload (sinon l'UI ne reçoit rien).
+  for (const ch of ['log', 'progress', 'status']) {
+    assert(new RegExp(`ipcRenderer\\.on\\('${ch}'`).test(preload), `preload: écoute l'événement "${ch}"`);
+    assert(new RegExp(`webContents\\.send\\('${ch}'`).test(ipc), `ipcHandlers: émet "${ch}"`);
+  }
+
+  console.log('\n[26] OK');
 })();
 
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);

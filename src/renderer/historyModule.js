@@ -21,7 +21,7 @@ function renderHistoryTable(jobs) {
     .map(
       (j) => `
     <tr>
-      <td>${escapeHtml(j.date)}${j.exportMeta && j.exportMeta.exportMode === 'custom' ? '<br><span class="tag-export-custom" title="Mode Personnalisé : uniquement les champs sélectionnés">✂️ Personnalisé</span>' : ''}</td>
+              <td>${escapeHtml(j.date)}${(j.exportMeta && ((j.exportMeta.profileId || j.exportMeta.exportMode) === 'custom')) ? '<br><span class="tag-export-custom" title="Mode Personnalisé : uniquement les champs sélectionnés">✂️ Personnalisé</span>' : ''}</td>
       <td><strong>${escapeHtml(String(j.adsCount))}</strong> annonces</td>
       <td>
         <div class="file-tags">

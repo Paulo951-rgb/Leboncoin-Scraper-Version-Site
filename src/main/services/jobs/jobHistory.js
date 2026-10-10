@@ -56,8 +56,13 @@ function buildAdHistory(allJobs) {
       };
     }
 
-    const likesFirst = first.ad.statistiques?.likes ?? first.ad.likes_count;
-    const likesLast = last.ad.statistiques?.likes ?? last.ad.likes_count;
+    // Likes : le modèle plat expose `likes`. On conserve des replis vers les
+    // anciennes formes (`statistiques.likes`, `likes_count`) pour rester
+    // compatible avec les jobs exportés par d'anciennes versions — sans ces
+    // replis, la détection de changement de likes ne lisait QUE les données
+    // actuelles et ignorait silencieusement les anciens jobs.
+    const likesFirst = first.ad.likes ?? first.ad.statistiques?.likes ?? first.ad.likes_count ?? null;
+    const likesLast = last.ad.likes ?? last.ad.statistiques?.likes ?? last.ad.likes_count ?? null;
     let likesChange = null;
     if (likesFirst != null && likesLast != null && likesFirst !== likesLast) {
       likesChange = {
@@ -68,8 +73,11 @@ function buildAdHistory(allJobs) {
       };
     }
 
-    const statusFirst = first.ad.dates?.statut || first.ad.status;
-    const statusLast = last.ad.dates?.statut || last.ad.status;
+    // Statut : le modèle actuel n'expose pas de statut ; on lit un éventuel
+    // `status` plat ou l'ancien `dates.statut` (rétro-compat). En l'absence des
+    // deux, statusChange reste null.
+    const statusFirst = first.ad.status ?? first.ad.dates?.statut ?? null;
+    const statusLast = last.ad.status ?? last.ad.dates?.statut ?? null;
     const statusChange = (statusFirst != null && statusLast != null && statusFirst !== statusLast)
       ? { avant: statusFirst, apres: statusLast }
       : null;
@@ -162,16 +170,21 @@ class JobHistoryManager {
           json: fs.existsSync(jsonPath) ? jsonPath : null,
           txt: fs.existsSync(txtPath) ? txtPath : null,
         },
-        // Méta-données d'export (mode Défaut / Personnalisé + liste de champs).
-        // Chargées depuis export-meta.json (écrit par le pipeline). Fallback
-        // 'default' si le fichier manque (anciens jobs).
+        // Méta-données d'export (profil Défaut/Maximum/Personnalisé + liste de
+        // champs). Le pipeline écrit `profileId` (version 2) ; on retombe sur
+        // `exportMode` pour les anciens jobs et on garantit `profileId` pour un
+        // contrat homogène côté renderer.
         exportMeta: (() => {
           try {
             if (fs.existsSync(exportMetaPath)) {
-              return JSON.parse(fs.readFileSync(exportMetaPath, 'utf8'));
+              const meta = JSON.parse(fs.readFileSync(exportMetaPath, 'utf8'));
+              if (meta && typeof meta === 'object' && !meta.profileId && meta.exportMode) {
+                meta.profileId = meta.exportMode;
+              }
+              return meta;
             }
           } catch { /* silencieux : fallback default */ }
-          return { exportMode: 'default', exportFields: null };
+          return { profileId: 'default', exportMode: 'default', exportFields: null };
         })(),
       });
     }

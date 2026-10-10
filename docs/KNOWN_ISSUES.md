@@ -19,10 +19,23 @@ stabilisation. Pour chaque entrée : impact, circonstances, prochaines étapes.
 
 - **Impact** : les bugs purement UI (rendu, événements DOM) ne sont pas couverts
   automatiquement ; seuls la syntaxe et des invariants de code sont testés.
+- **Constat aggravant (phase 3)** : plusieurs bugs UI réels et silencieux ont été
+  découverts uniquement par relecture — **navigation par onglets totalement
+  morte** (sélecteur `.tab-btn` obsolète), éléments DOM absents
+  (`statMedPrice`, `structureWarning`), `applySellerDataVisibility` jamais
+  appelée, bandeau structure jamais masqué, graphiques fantômes. Aucun n'aurait
+  été attrapé par la suite actuelle. Ils sont corrigés, mais le manque de tests
+  UI reste une source de risque de régression.
 - **Circonstances** : toute modification des modules `src/renderer/`.
 - **Prochaines étapes** : ajouter un harnais DOM léger (jsdom) *si* le bénéfice
   est avéré ; sinon maintenir une checklist manuelle (démarrage de job, arrêt,
-  suppression de job, changement de thème, mode hors-ligne).
+  suppression de job, changement de thème, mode hors-ligne, navigation entre
+  tous les onglets).
+- **Mitigation partielle (phase 3)** : un test statique `[25]` vérifie que tous
+  les `getElementById('X')` littéraux des modules renderer ciblent un `id`
+  présent dans `index.html`, et que chaque `[data-tab="X"]` pointe vers un
+  `.tab-content` d'id `X` existant. Cela couvre la classe exacte des bugs P3-1
+  (navigation morte) et P3-5 (éléments DOM absents) sans exécuter de DOM.
 
 ## KI-3 — `urlSecurity` : couverture DNS incomplète sur le chemin navigateur *(P2, sécurité)*
 
