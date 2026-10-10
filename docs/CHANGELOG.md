@@ -3,6 +3,47 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Audit complet : accès réel, 403/429, états honnêtes — 2026-10-10
+
+### Corrigé (bugs confirmés par lecture du code)
+
+- **Fausse validation de session (critique)** — `harCapturer._warmupSession`
+  déclarait le CAPTCHA « résolu » sur la seule disparition visuelle du défi
+  (iframe/texte/URL) puis persistait la session et reprenait la capture, même
+  quand le serveur répondait encore **HTTP 403**. Ajout de `_verifyAccess()` :
+  requête document autorisée (HEAD puis GET), jugement sur le **statut HTTP réel**
+  + validité du contenu. 403/429 ne sont plus jamais un succès.
+- **Boucles de fenêtres CAPTCHA (élevée)** — la capture relançait une reprise
+  pour chaque page bloquée sans vérifier l'accès réel → fenêtres en chaîne.
+  Désormais la reprise n'a lieu QUE sur `verified === true` ; sinon arrêt propre.
+- **HTTP 403/429 non distincts (élevée)** — la gestion les traitait de la même
+  façon (« BLOCKED_403 »). Ajout de codes structurés `HTTP_ACCESS_REFUSED`
+  (403), `HTTP_RATE_LIMITED` (429) et `ACCESS_UNVERIFIED`, du respect de
+  l'en-tête **Retry-After**, et de codes de sortie pipeline `3` (403) / `4` (429).
+- **Faux « succès » sur enrichissement bloqué (élevée)** — un 403/429 pendant
+  l'enrichissement était rapporté « Scraping terminé avec succès ». Nouvel état
+  `partial` (succès partiel) ; `annonces.json` partiel est préservé et signalé.
+- **Capture bloquée présentée comme réussie (moyenne)** — la capture renvoie
+  désormais un résultat structuré `{ pagesCaptured, blocked, blockedCode,
+  httpStatus }` ; `ipcHandlers` n'entre PAS dans le pipeline si l'accès n'est pas
+  confirmé (états `refused` / `rate_limited`).
+
+### Ajouté
+
+- Codes d'erreurs `HTTP_ACCESS_REFUSED`, `HTTP_RATE_LIMITED`, `ACCESS_UNVERIFIED`,
+  `CAPTCHA_NOT_CONFIRMED` (`errorCodes.js`).
+- Section de tests `[30]` (33 assertions) : vérification d'accès unitaire
+  (`_verifyAccess` avec pages/dispatch simulés, sans navigateur), `_parseRetryAfter`,
+  états honnêtes, codes de sortie, préservation des partiels. Tests pilotant
+  CAPTCHA visible / 403 persistant / 429 + Retry-After / contenu bloqué en 200.
+
+### Modifié
+
+- `ipcHandlers` : états `partial` / `refused` / `rate_limited` ; conserve et
+  signale les résultats partiels en cas d'échec d'enrichissement.
+- `scraperModule.js` / `widget.html` : état `partial` (et `refused`/`rate_limited`)
+  traité comme terminal (boutons réactivés, rafraîchissement des données).
+
 ## [Non publié] — Distribution Windows fiable & Releases GitHub — 2026-10-10
 
 ### Ajouté

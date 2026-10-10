@@ -22,6 +22,15 @@ const ErrorCodes = {
   CAPTCHA_DETECTED: 'CAPTCHA_DETECTED',
   CAPTCHA_TIMEOUT: 'CAPTCHA_TIMEOUT',
   CAPTCHA_UNRESOLVED: 'CAPTCHA_UNRESOLVED',
+  // Le défi a disparu visuellement (iframe/texte/URL) mais la ressource reste
+  // inaccessible : la résolution visuelle n'est PAS une preuve d'autorisation.
+  CAPTCHA_NOT_CONFIRMED: 'CAPTCHA_NOT_CONFIRMED',
+
+  // Accès ressource : distinguent un refus/l'une limitation durable d'un
+  // simple blocage ponctuel.
+  HTTP_ACCESS_REFUSED: 'HTTP_ACCESS_REFUSED', // HTTP 403 : accès refusé par le serveur
+  HTTP_RATE_LIMITED: 'HTTP_RATE_LIMITED',     // HTTP 429 : limitation de débit (Retry-After respecté)
+  ACCESS_UNVERIFIED: 'ACCESS_UNVERIFIED',     // session non validée : impossible de confirmer l'accès
 
   // Parsing
   PARSE_HAR_INVALID: 'PARSE_HAR_INVALID',
@@ -85,9 +94,11 @@ function createError(code, message, context) {
 function classifyError(code) {
   if (!code) return 'unknown';
   if (code.startsWith('NET_')) return 'network_error';
+  if (code === 'HTTP_ACCESS_REFUSED' || code === 'HTTP_RATE_LIMITED') return 'network_error';
   if (code.startsWith('HTTP_4')) return 'network_error';
   if (code.startsWith('HTTP_5')) return 'global_error';
   if (code.startsWith('CAPTCHA_')) return 'session_error';
+  if (code === 'ACCESS_UNVERIFIED') return 'session_error';
   if (code.startsWith('PARSE_')) return 'global_error';
   if (code.startsWith('EXTRACTOR_')) return 'ad_error';
   if (code.startsWith('SESSION_')) return 'session_error';

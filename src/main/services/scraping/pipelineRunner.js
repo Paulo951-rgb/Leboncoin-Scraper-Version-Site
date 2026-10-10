@@ -127,6 +127,23 @@ class PipelineRunner extends EventEmitter {
           this.emit('log', { level: 'error', message: `[${structuredErr.code}] ${errMessage}` });
           this.emit('log', { level: 'debug', message: `[pipelineRunner] Aucun résultat en ${elapsed} (code 2). STDERR : ${truncate(stripAnsi(stderrTotal), 500) || '(vide)'}` });
           reject(new Error(`[${structuredErr.code}] ${errMessage}`));
+        } else if (code === 3) {
+          // Exit 3 : accès refusé (HTTP 403) pendant l'enrichissement. Les
+          // annonces de base ont pu être écrites — le message reste explicite.
+          const errCode = ErrorCodes.HTTP_ACCESS_REFUSED;
+          const errMessage = 'Enrichissement interrompu : accès refusé par le serveur (HTTP 403).';
+          const structuredErr = createError(errCode, errMessage, { exitCode: code, category: classifyError(errCode), stderr: truncate(stripAnsi(stderrTotal), 500) });
+          this.emit('log', { level: 'error', message: `[${structuredErr.code}] ${errMessage}` });
+          this.emit('log', { level: 'debug', message: `[pipelineRunner] Arrêt enrichissement en ${elapsed} (code 3, HTTP 403).` });
+          reject(new Error(`[${structuredErr.code}] ${errMessage}`));
+        } else if (code === 4) {
+          // Exit 4 : limitation de débit (HTTP 429) pendant l'enrichissement.
+          const errCode = ErrorCodes.HTTP_RATE_LIMITED;
+          const errMessage = 'Enrichissement interrompu : requête limitée par le serveur (HTTP 429).';
+          const structuredErr = createError(errCode, errMessage, { exitCode: code, category: classifyError(errCode), stderr: truncate(stripAnsi(stderrTotal), 500) });
+          this.emit('log', { level: 'error', message: `[${structuredErr.code}] ${errMessage}` });
+          this.emit('log', { level: 'debug', message: `[pipelineRunner] Arrêt enrichissement en ${elapsed} (code 4, HTTP 429).` });
+          reject(new Error(`[${structuredErr.code}] ${errMessage}`));
         } else {
           // Classifie l'erreur selon le code de sortie pour un diagnostic structuré.
           const exitCode = code != null ? code : -1;
