@@ -95,7 +95,9 @@ class PipelineRunner extends EventEmitter {
         const structuredErr = createError(errCode, `Erreur processus : ${err.message}`, { error: err.message, code: err.code });
         this.emit('log', { level: 'error', message: `[${structuredErr.code}] Erreur processus : ${err.message}` });
         this.emit('log', { level: 'debug', message: `[pipelineRunner] Détail erreur processus : ${describeError(err)}` });
-        reject(err);
+        // Libere la reference même si 'close' ne se déclenche pas (échec de spawn).
+        this.childProcess = null;
+        reject(new Error(`[${structuredErr.code}] ${structuredErr.message}`));
       });
 
       this.childProcess.on('close', (code) => {
@@ -115,6 +117,16 @@ class PipelineRunner extends EventEmitter {
           this.emit('log', { level: 'info', message: '✅ Execution du pipeline terminée avec succès.' });
           this.emit('log', { level: 'debug', message: `[pipelineRunner] Terminé en ${elapsed} (code 0).${stderrTotal ? ' STDERR total : ' + truncate(stripAnsi(stderrTotal), 200) : ''}` });
           resolve(0);
+        } else if (code === 2) {
+          // Exit 2 : le pipeline n'a trouvé AUCUNE donnée exploitable (HAR vide,
+          // 0 annonce). Ce n'est PAS un crash navigateur : on remonte un échec
+          // explicite pour ne pas présenter un run vide comme un succès.
+          const errCode = ErrorCodes.PARSE_NO_ADS;
+          const errMessage = 'Le pipeline n\'a extrait aucune annonce (HAR vide ou structure inattendue).';
+          const structuredErr = createError(errCode, errMessage, { exitCode: code, category: classifyError(errCode), stderr: truncate(stripAnsi(stderrTotal), 500) });
+          this.emit('log', { level: 'error', message: `[${structuredErr.code}] ${errMessage}` });
+          this.emit('log', { level: 'debug', message: `[pipelineRunner] Aucun résultat en ${elapsed} (code 2). STDERR : ${truncate(stripAnsi(stderrTotal), 500) || '(vide)'}` });
+          reject(new Error(`[${structuredErr.code}] ${errMessage}`));
         } else {
           // Classifie l'erreur selon le code de sortie pour un diagnostic structuré.
           const exitCode = code != null ? code : -1;

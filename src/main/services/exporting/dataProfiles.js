@@ -1,6 +1,6 @@
 'use strict';
 
-const { ALL_FIELD_KEYS, FIELD_CATEGORIES } = require('./exportFields');
+const { ALL_FIELD_KEYS } = require('./exportFields');
 
 // Profil Défaut : champs essentiels pour un scraping rapide et léger
 const DEFAULT_PROFILE_FIELDS = [

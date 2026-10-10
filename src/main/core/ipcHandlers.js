@@ -8,12 +8,10 @@ const { PipelineRunner } = require('../services/scraping/pipelineRunner');
 const { FileManager } = require('../infrastructure/fileManager');
 const { JobHistoryManager } = require('../services/jobs/jobHistory');
 const { StorageCleaner } = require('../services/maintenance/storageCleaner');
-const { Notifier } = require('../infrastructure/notifications');
 const { JOBS_DIR, BASE_OUT_DIR } = require('../config/constants');
-const { redact, summarizeAds, formatBytes, describeError } = require('../utils/diagnostics');
-const { writeWithChecksum, readWithChecksum } = require('../utils/integrity');
+const { summarizeAds, formatBytes, describeError } = require('../utils/diagnostics');
+const { readWithChecksum } = require('../utils/integrity');
 const { loadSettings, saveSettings } = require('./settings');
-const { filterAdByFields: filterAdsForExport, ALL_FIELD_KEYS: ALL_EXPORT_KEYS } = require('../services/exporting/exportFields');
 const { getProfileFields } = require('../services/exporting/dataProfiles');
 
 function setupIpcHandlers(getMainWindow) {
@@ -80,14 +78,6 @@ function setupIpcHandlers(getMainWindow) {
     };
   }
   let sessionStats = newSessionStats();
-  // Wrapper autour de sendLog qui compte les niveaux pour le résumé.
-  const sessionLog = (data) => {
-    const level = data.level || 'info';
-    if (level === 'error') sessionStats.errors++;
-    else if (level === 'warn') sessionStats.warnings++;
-    else if (level === 'debug') sessionStats.debugs++;
-    sendLog(data);
-  };
 
   function formatDuration(seconds) {
     if (seconds < 60) return `${seconds}s`;
@@ -184,6 +174,11 @@ function setupIpcHandlers(getMainWindow) {
         }
       });
 
+      // UA figé pour toute la capture : capturé AVANT capture() et avant de
+      // mettre activeCapturer à null, pour le transmettre au pipeline
+      // (enrichissement) et garder une empreinte cohérente (mêmes cookies + UA).
+      const captureUserAgent = activeCapturer.getUserAgent();
+
       await activeCapturer.capture({
         searchUrl,
         maxPages: parseInt(pages, 10),
@@ -193,6 +188,14 @@ function setupIpcHandlers(getMainWindow) {
       sendLog({ level: 'debug', message: `[job:start] Phase capture HAR terminée en ${Math.round(harElapsed / 1000)}s. Taille HAR : ${fs.existsSync(harPath) ? formatBytes(fs.statSync(harPath).size) : '(introuvable)'}.` });
 
       activeCapturer = null;
+
+      // Si l'utilisateur a demandé l'arrêt pendant la capture HAR, on NE lance
+      // PAS le pipeline d'enrichissement (coûteux) et on remonte un état
+      // « annulé » distinct — sinon un clic « Arrêter » aboutissait à un
+      // message « Scraping terminé avec succès ! » trompeur.
+      if (activeCancel && activeCancel.cancelled) {
+        throw Object.assign(new Error('Scraping annulé par l\'utilisateur.'), { _cancelled: true });
+      }
 
       sendStatus({ state: 'processing', message: 'Extraction et enrichissement des annonces...' });
 
@@ -239,7 +242,7 @@ function setupIpcHandlers(getMainWindow) {
         limit: limit ? parseInt(limit, 10) : undefined,
         speed: userSettings.scrapeSpeed || 'moyen',
         headless: userSettings.headless !== false,
-        userAgent: activeCapturer ? activeCapturer._userAgent : undefined,
+        userAgent: captureUserAgent,
         // Profil de données (Défaut / Maximum / Personnalisé) : liste concrète de
         // clés de champs à exporter, appliquée par le pipeline (JSON + TXT).
         profileId: resolvedProfileId,
@@ -294,11 +297,19 @@ function setupIpcHandlers(getMainWindow) {
       }
 
     } catch (err) {
-      sendLog({ level: 'error', message: `❌ Erreur : ${err.message}` });
-      sendLog({ level: 'debug', message: `[job:start] Détail erreur fatale : ${describeError(err)}` });
-      sessionStats.errors++;
-      sendSessionSummary();
-      sendStatus({ state: 'error', message: `Erreur : ${err.message}` });
+      if (err && err._cancelled) {
+        // Annulation utilisateur : état dédié (« cancelled »), distinct d'un
+        // succès et d'une erreur. Le renderer réactive les boutons.
+        sendLog({ level: 'warn', message: `⏹️ ${err.message}` });
+        sendSessionSummary();
+        sendStatus({ state: 'cancelled', message: 'Scraping annulé par l\'utilisateur.' });
+      } else {
+        sendLog({ level: 'error', message: `❌ Erreur : ${err.message}` });
+        sendLog({ level: 'debug', message: `[job:start] Détail erreur fatale : ${describeError(err)}` });
+        sessionStats.errors++;
+        sendSessionSummary();
+        sendStatus({ state: 'error', message: `Erreur : ${err.message}` });
+      }
     } finally {
       isRunning = false;
       activeCapturer = null;

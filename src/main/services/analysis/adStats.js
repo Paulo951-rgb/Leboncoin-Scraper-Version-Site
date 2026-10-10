@@ -41,6 +41,12 @@ class AdStats {
     const avg = Math.round(sum / validPrices.length);
     const minPrice = validPrices[0];
     const maxPrice = validPrices[validPrices.length - 1];
+    // Médiane : pour un nombre PAIR de prix, moyenne des deux valeurs centrales
+    // (ne pas reprendre validPrices[Math.floor(n/2)] qui est faux pour n pair).
+    const mid = Math.floor(validPrices.length / 2);
+    const medianPrice = validPrices.length % 2 !== 0
+      ? validPrices[mid]
+      : Math.round((validPrices[mid - 1] + validPrices[mid]) / 2);
 
     // Statistiques deliveryType (modèle unifié)
     let livraisonCount = 0;
@@ -74,6 +80,7 @@ class AdStats {
         minPrice,
         maxPrice,
         avgPrice: avg,
+        medianPrice,
         totalAds: ads.length,
         pricedAds: validPrices.length,
         livraisonCount,

@@ -466,7 +466,7 @@ window.api.onProgress(({ percent, status, eta }) => {
 window.api.onStatusChange(({ state, message }) => {
   if (message) statusText.textContent = `Statut : ${message}`;
 
-  if (state === 'completed' || state === 'error') {
+  if (state === 'completed' || state === 'error' || state === 'cancelled') {
     startBtn.disabled = false;
     stopBtn.disabled = true;
     progressBar.style.width = '100%';

@@ -1716,7 +1716,9 @@ input::placeholder { color: var(--text-muted); opacity: 0.7; }
  * ------------------------------------------------------------------------- */
 body.seller-data-hidden .seller-info-banner,
 body.seller-data-hidden .modal-extra-val[data-seller="true"],
-body.seller-data-hidden [data-seller-field] {
+body.seller-data-hidden [data-seller-field],
+body.seller-data-hidden .col-vendeur,
+body.seller-data-hidden .cell-vendeur {
   display: none !important;
 }
 

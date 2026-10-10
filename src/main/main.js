@@ -67,6 +67,9 @@ function createWidgetWindow() {
 
   widgetWindow.loadFile(path.join(__dirname, '../renderer/widget.html'));
 
+  // Le widget est une page locale figée : aucune navigation ni fenêtre externe.
+  widgetWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+
   widgetWindow.on('closed', () => {
     widgetWindow = null;
   });
@@ -121,6 +124,21 @@ function createWindow() {
 
   mainWindow.loadFile(indexPath).catch((err) => {
     console.error('❌ Impossible de charger index.html :', err);
+  });
+
+  // Durcissement navigation : l'UI est une page locale unique. Toute tentative
+  // d'ouverture de fenêtre (window.open / target=_blank) ou de navigation vers
+  // une autre origine est refusée. Les liens externes passent exclusivement par
+  // shell:openExternal (validé http/https). Sans cela, un lien injecté (ex: dans
+  // une description d'annonce) pourrait charger une page distante dans la fenêtre
+  // privilégiée (nodeIntegration=false, mais accès à window.api).
+  mainWindow.webContents.setWindowOpenHandler(() => ({ action: 'deny' }));
+  mainWindow.webContents.on('will-navigate', (event, navigationUrl) => {
+    const allowed = path.join(__dirname, '../renderer/index.html');
+    if (navigationUrl.split('#')[0] !== `file://${allowed}`) {
+      event.preventDefault();
+      console.warn(`[security] Navigation bloquée : ${navigationUrl}`);
+    }
   });
 
   mainWindow.on('closed', () => {

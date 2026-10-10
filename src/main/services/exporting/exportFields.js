@@ -171,6 +171,50 @@ function _formatValue(fieldDef, value) {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// Compatibilité des noms de champs (modèle de données vs clés d'export)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// HISTORIQUE DU BUG : le modèle produit par normalizeAd() nomme ses champs
+// `city`, `zipcode`, `nombreAvis`, `vendeurAncienneteJours`. Les champs
+// exportables utilisent des clés « métier » : `ville`, `codePostal`,
+// `vendeurNbAvis`, `vendeurAnciennete`. filterAdByFields faisait une simple
+// copie `out[key] = ad[key]` → `ad['ville']` n'existe pas (le modèle expose
+// `city`), donc ces champs étaient SILENCIEUSEMENT supprimés des exports JSON
+// en profils Défaut et Personnalisé.
+//
+// On distingue deux résolutions :
+//   - _resolveRawFieldValue : valeur BRUTE du modèle (JSON), sans formatage,
+//     en traduisant la clé d'export vers le nom du champ du modèle.
+//   - get du champ (inchangé) : valeur FORMATÉE pour le TXT lisible.
+// Les alias ci-dessous couvrent les anciens exports/fixtures qui utiliseraient
+// encore les noms « métier » (`ville`, `codePostal`…).
+const MODEL_KEY_FOR_EXPORT = {
+  ville: 'city',
+  codePostal: 'zipcode',
+  vendeurNbAvis: 'nombreAvis',
+  vendeurAnciennete: 'vendeurAncienneteJours',
+};
+
+// Valeur brute du modèle pour une clé d'export : essaie le nom canonique du
+// modèle, puis la clé d'export elle-même (rétro-compat fixtures/anciens exports).
+function _resolveRawFieldValue(exportKey, ad) {
+  if (ad == null || typeof ad !== 'object') return null;
+  const modelKey = MODEL_KEY_FOR_EXPORT[exportKey] || exportKey;
+  const v = ad[modelKey];
+  if (v !== undefined && v !== null) return v;
+  const fallback = ad[exportKey];
+  return fallback === undefined ? null : fallback;
+}
+
+// Valeur lisible (TXT) : le `get` du champ applique le formatage ; si le champ
+// d'export n'est pas reconnu par le modèle, repli sur la valeur brute.
+function _resolveDisplayFieldValue(fieldDef, ad) {
+  const formatted = fieldDef.get ? fieldDef.get(ad) : undefined;
+  if (formatted != null) return formatted;
+  return _resolveRawFieldValue(fieldDef.key, ad);
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // Filtrage des annonces
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -199,9 +243,14 @@ function filterAdByFields(ad, fields, options) {
   }
 
   const out = {};
-  // Copie les clés racines existantes dans la sélection
+  // Résout chaque clé sélectionnée vers la valeur BRUTE du modèle (JSON non
+  // formaté). Sans cette traduction, les clés d'export sans homonyme exact dans
+  // le modèle (`ville`→`city`, `codePostal`→`zipcode`, `vendeurNbAvis`→
+  // `nombreAvis`, `vendeurAnciennete`→`vendeurAncienneteJours`) étaient perdues.
   for (const key of selectedKeys) {
-    if (Object.prototype.hasOwnProperty.call(ad, key)) out[key] = ad[key];
+    const value = _resolveRawFieldValue(key, ad);
+    if (value !== undefined && value !== null) out[key] = value;
+    else if (Object.prototype.hasOwnProperty.call(ad, key)) out[key] = ad[key];
   }
   return out;
 }
@@ -233,7 +282,7 @@ function toReadableBlock(ad, index, fields, options) {
   lines.push('');
 
   for (const f of fieldDefs) {
-    const raw = f.get(ad);
+    const raw = _resolveDisplayFieldValue(f, ad);
     const labelPad = f.label.padEnd(labelMax, ' ');
     lines.push(`${labelPad} : ${_formatValue(f, raw)}`);
   }
