@@ -3,6 +3,61 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Phase 2 : sécurisation réseau, annulation, dépendances — 2026-10-10
+
+### Corrigé
+
+- **Annulation pendant l'enrichissement (P1)** : `ipcHandlers` ignore
+  désormais la valeur de retour du runner ; un code `130` (SIGINT) est traité
+  comme une **annulation** et non comme un succès. Le pipeline installe un
+  handler `SIGINT` coopératif : sortie de boucle propre, écriture des résultats
+  partiels, fermeture du navigateur, handler retiré en `finally`.
+  (`core/ipcHandlers.js`, `services/scraping/leboncoin-pipeline.js`)
+- **Suffixe trompeur d'allowlist** : `isHostAllowed` traite une entrée de domaine
+  comme domaine **inclusif** (exact + sous-domaines) et rejette
+  `leboncoin.fr.attacker.com`. (`utils/urlSecurity.js`)
+- **IPv6 littérales dans `validateRemoteUrl`/`isSafeFetchDestination`** : les
+  crochets de `URL.hostname` sont retirés avant `net.isIP`, sinon `[::1]`,
+  `[fe80::1]` et les IPv4-mappées passaient le contrôle. (`utils/urlSecurity.js`)
+
+### Sécurité
+
+- **Chemin Playwright sécurisé (KI-3)** :
+  - nouvelle `isSafeFetchDestination(url, allowlist?)` **synchrone** et
+    fail-closed (protocole http(s), IP privées/loopback/link-local IPv4 et IPv6,
+    hostnames locaux, allowlist) ;
+  - `HarCapturer.capture()` refuse une URL de recherche hors domaines Leboncoin
+    (`LEBONCOIN_SOURCE_HOSTS`) ou visant une IP interdite, **avant** de lancer
+    Chromium ;
+  - `_installNetworkGuard` intercepte toutes les sous-requêtes Playwright
+    (`ctx.route('**/*')`) et bloque les destinations dangereuses (défense en
+    profondeur) ;
+  - `validateRemoteUrl` est **fail-closed** si la résolution DNS est vide/échouée.
+
+### Dépendances
+
+- Lockfile : `brace-expansion` (DoS récursif) et `http-cache-semantics` (fuite de
+  cache inter-utilisateur) mis à jour dans la plage de compatibilité →
+  17 → 15 vulnérabilités `npm audit`.
+- Mises à jour **majeures** (Electron, Playwright, electron-builder) **non
+  appliquées** : à planifier avec validation packaging/capture. Documentées dans
+  `docs/KNOWN_ISSUES.md` (KI-5).
+
+### Tests
+
+- Suite : 813 → **861** assertions réussies.
+- Ajouts : `isSafeFetchDestination` (autorisés/interdits/IPv6/suffixe trompeur),
+  `validateRemoteUrl` fail-closed, câblage `harCapturer`, scénarios d'erreur du
+  pipeline (HAR absent/invalide/données invalides), intégration `PipelineRunner`
+  (annulation → 130, HAR absent → rejet), préservation des résultats partiels,
+  câblage annulation enrichissement, cas limites de la médiane.
+
+### Documentation
+
+- Ajout de `docs/PHASE2_REPORT.md`.
+- `docs/KNOWN_ISSUES.md` : KI-3 (statut, limite), KI-5 (dépendances), KI-7
+  (icône de build manquante).
+
 ## [Non publié] — Audit de stabilisation 2026-10-10
 
 ### Corrigé

@@ -10,6 +10,17 @@ const { formatBytes, formatMs, describeError } = require('../../utils/diagnostic
 
 const { getRandomUserAgent } = require('./userAgents');
 const { ErrorCodes, createError } = require('./errorCodes');
+const { isSafeFetchDestination } = require('../../utils/urlSecurity');
+
+// Domaines Leboncoin légitimes : l'URL de recherche fournie par l'utilisateur
+// DOIT pointer vers l'un d'eux. C'est le principal point d'entrée réseau
+// contrôlable par l'utilisateur (protection SSRF) : sans ce contrôle, une URL
+// de recherche comme `http://169.254.169.254/...` serait naviguée par Chromium.
+const LEBONCOIN_SOURCE_HOSTS = [
+  'leboncoin.fr', 'www.leboncoin.fr',
+  'leboncoin.com', 'www.leboncoin.com',
+  'leboncoindirect.com', 'www.leboncoindirect.com',
+];
 
 function buildPageUrl(baseUrl, pageNumber) {
   try {
@@ -69,8 +80,33 @@ class HarCapturer extends EventEmitter {
     await ctx.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
+    await this._installNetworkGuard(ctx);
     const p = await ctx.newPage();
     return { ctx, p };
+  }
+
+  // Défense en profondeur sur les sous-requêtes : intercepte chaque requête du
+  // contexte et bloque les destinations structurellement dangereuses (IP
+  // privées/loopback/link-local littérales, hostnames locaux, schémas
+  // exotiques). On n'applique PAS d'allowlist ici : les CDN d'images/JS
+  // Leboncoin sont nécessaires au rendu et trop nombreux à énumérer.
+  //
+  // LIMITE ASSUMÉE : ce filtre ne fait pas de résolution DNS (un hostname
+  // arbitraire résolvant vers une IP privée n'est pas détecté ici). Playwright
+  // Python/Node ne réexpose pas l'IP de socket résolue de façon fiable. La
+  // protection réelle contre le rebinding DNS est hors de portée ; l'entrée
+  // utilisateur contrôlée (URL de recherche) est, elle, strictement limitée aux
+  // domaines Leboncoin dans capture().
+  async _installNetworkGuard(ctx) {
+    await ctx.route('**/*', (route) => {
+      const url = route.request().url();
+      const check = isSafeFetchDestination(url);
+      if (!check.safe) {
+        this.emit('log', { level: 'warn', message: `[network-guard] Requête bloquée : ${url} (${check.reason})` });
+        return route.abort('blockedbyclient').catch(() => {});
+      }
+      return route.continue().catch(() => {});
+    });
   }
 
   // Détecte un CAPTCHA / blocage sur la page. Vérifie plusieurs vecteurs :
@@ -345,6 +381,13 @@ class HarCapturer extends EventEmitter {
 
   async capture({ searchUrl, maxPages = 1, outputHarPath }) {
     if (!searchUrl) throw new Error("L'URL de recherche est requise.");
+    // Contrôle de destination (SSRF) AVANT tout lancement de navigateur :
+    // protocole http(s), pas d'IP privée/locale, et domaine Leboncoin imposé.
+    const destCheck = isSafeFetchDestination(searchUrl, LEBONCOIN_SOURCE_HOSTS);
+    if (!destCheck.safe) {
+      const err = createError(ErrorCodes.NET_CONNECTION_FAILED, `URL de recherche refusée : ${destCheck.reason}`, { url: searchUrl, reason: destCheck.reason });
+      throw Object.assign(new Error(err.message), { _code: err.code });
+    }
     const targetDir = path.dirname(outputHarPath);
     fs.mkdirSync(targetDir, { recursive: true });
     const statePath = path.join(targetDir, 'session-state.json');

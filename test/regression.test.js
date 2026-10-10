@@ -137,6 +137,17 @@ assert(txStatsRetro.stats.mainPropreCount === 1, 'AdStats rétro-compat: mainPro
 assert(txStatsRetro.stats.lesDeuxCount === 1, 'AdStats rétro-compat: lesDeuxCount calculé depuis livraison/mainPropre');
 assert(txStatsRetro.stats.inconnuCount === 1, 'AdStats rétro-compat: inconnuCount calculé depuis livraison/mainPropre');
 
+// AdStats : cas limites supplémentaires de la médiane (jeux de données variés)
+// La médiane est arrondie à l'entier (cohérent avec le renderer statsModule).
+assert(AdStats.analyze([{ id: '1', prix: 5 }, { id: '2', prix: 10 }]).stats.medianPrice === 8,
+  'AdStats: medianPrice paire à 2 valeurs = 8 (arrondi de 7.5)');
+assert(AdStats.analyze([{ id: '1', prix: 42 }]).stats.medianPrice === 42,
+  'AdStats: medianPrice une seule valeur');
+assert(AdStats.analyze([{ id: '1', prix: 10 }, { id: '2', prix: 10 }, { id: '3', prix: 10 }, { id: '4', prix: 10 }]).stats.medianPrice === 10,
+  'AdStats: medianPrice série constante');
+assert(AdStats.analyze([{ id: '1', prix: 300 }, { id: '2', prix: 100 }, { id: '3', prix: 400 }, { id: '4', prix: 200 }]).stats.medianPrice === 250,
+  'AdStats: medianPrice insensible à l\'ordre (tableau non trié)');
+
 // --- 3. Pipeline (fork) ---
 console.log('\n[3] Pipeline (leboncoin-pipeline.js)');
 const os = require('os');
@@ -216,6 +227,18 @@ console.log('\n[3b2] Annulation : état cancelled');
   const scraperCancel = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/scraperModule.js'), 'utf8');
   assert(/state === 'completed' \|\| state === 'error' \|\| state === 'cancelled'/.test(scraperCancel),
     'scraperModule: état cancelled traité comme terminal (boutons réactivés)');
+  // Annulation PENDANT l'enrichissement : le runner renvoie 130, ipcHandlers doit
+  // traiter ce code comme une annulation (sinon succès trompeur).
+  assert(/const pipelineExit\s*=\s*await activeRunner\.run/.test(ipcCodeCancel),
+    'ipcHandlers: récupère le code de sortie du runner');
+  assert(/pipelineExit\s*===\s*130/.test(ipcCodeCancel),
+    'ipcHandlers: code 130 (interruption pipeline) → état cancelled');
+  // Annulation coopérative dans le pipeline : handler SIGINT → arrêt propre.
+  const pipelineCancelCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
+  assert(/process\.once\('SIGINT'/.test(pipelineCancelCode), 'pipeline: handler SIGINT installé (annulation coopérative)');
+  assert(/this\.cancelled\s*=\s*true/.test(pipelineCancelCode), 'pipeline: drapeau cancelled positionné sur SIGINT');
+  assert(/shouldStopAll \|\| this\.cancelled/.test(pipelineCancelCode), 'pipeline: boucle d\'enrichissement interrompue si annulé');
+  assert(/process\.removeListener\('SIGINT'/.test(pipelineCancelCode), 'pipeline: handler SIGINT retiré en finally (pas de fuite)');
 }
 
 
@@ -238,6 +261,117 @@ await new Promise((resolve) => {
     resolve();
   });
 });
+
+
+// --- 3d. Scénarios d'erreur du pipeline (fixtures déterministes) ---
+console.log('\n[3d] Pipeline scénarios d\'erreur');
+
+// 3d-1. HAR absent → exit code d'erreur (pas 0), pas de faux succès.
+const missingOut = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-missing-'));
+await new Promise((resolve) => {
+  const child = fork(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), [path.join(missingOut, 'absent.har'), '--out', missingOut, '--headless', '--no-desc'], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  child.on('close', (code) => {
+    assert(code !== 0, 'pipeline HAR absent: code de sortie non nul (pas de faux succès)');
+    fs.rmSync(missingOut, { recursive: true, force: true });
+    resolve();
+  });
+});
+
+// 3d-2. HAR invalide (JSON corrompu) → exit code d'erreur.
+const badHarOut = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-badhar-'));
+fs.writeFileSync(path.join(badHarOut, 'capture.har'), '{ ceci n\'est pas du JSON ');
+await new Promise((resolve) => {
+  const child = fork(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), [path.join(badHarOut, 'capture.har'), '--out', badHarOut, '--headless', '--no-desc'], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  child.on('close', (code) => {
+    assert(code !== 0, 'pipeline HAR invalide: code de sortie non nul');
+    fs.rmSync(badHarOut, { recursive: true, force: true });
+    resolve();
+  });
+});
+
+// 3d-3. Données invalides (annonces sans aucun champ exploitable) :
+// soit exit 2 (aucune donnée exploitable), soit exit 0 avec un tableau vide —
+// dans les deux cas, JAMAIS un succès avec des annonces inventées.
+const garbageOut = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-garbage-'));
+const garbageHar = {
+  log: { entries: [ { request: { url: 'https://www.leboncoin.fr/recherche' }, response: { status: 200, content: { mimeType: 'text/html', text: '<html><script id="__NEXT_DATA__" type="application/json">{}</script></html>' } } } ] },
+};
+fs.writeFileSync(path.join(garbageOut, 'capture.har'), JSON.stringify(garbageHar));
+await new Promise((resolve) => {
+  const child = fork(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), [path.join(garbageOut, 'capture.har'), '--out', garbageOut, '--headless', '--no-desc'], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  child.on('close', (code) => {
+    assert(code === 2, 'pipeline données invalides: exit 2 (aucune donnée exploitable)');
+    const adsPath = path.join(garbageOut, 'annonces.json');
+    if (fs.existsSync(adsPath)) {
+      const ads = JSON.parse(fs.readFileSync(adsPath, 'utf8'));
+      assert(Array.isArray(ads) && ads.length === 0, 'pipeline données invalides: aucune annonce inventée');
+    }
+    fs.rmSync(garbageOut, { recursive: true, force: true });
+    resolve();
+  });
+});
+
+// --- 3e. PipelineRunner : annulation, erreurs, résultat vide ---
+console.log('\n[3e] PipelineRunner (intégration)');
+{
+  const { PipelineRunner } = require('../src/main/services/scraping/pipelineRunner');
+
+  // 3e-1. Annulation d'un pipeline : resolve(130), signal emit, pas de rejet.
+  // On appelle stop() immédiatement après run() : le sous-processus est déjà
+  // forké de façon synchrone, donc stop() positionne isCancelled avant que
+  // l'événement 'close' ne soit traité (pas de course liée à la durée du job).
+  const runDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-run-'));
+  fs.writeFileSync(path.join(runDir, 'capture.har'), JSON.stringify(har));
+  await new Promise((resolve) => {
+    const runner = new PipelineRunner();
+    let sawInterrupt = false;
+    runner.on('log', (l) => { if (/Interruption demandée/.test(l.message)) sawInterrupt = true; });
+    const pending = runner.run({ harPath: path.join(runDir, 'capture.har'), outDir: runDir, noDesc: true, headless: true });
+    runner.stop();
+    pending
+      .then((result) => {
+        assert(result === 130, 'PipelineRunner: annulation → resolve(130)');
+        assert(sawInterrupt, 'PipelineRunner: annulation → log "Interruption demandée"');
+        fs.rmSync(runDir, { recursive: true, force: true });
+        resolve();
+      })
+      .catch((e) => { assert(false, 'PipelineRunner: annulation ne doit pas rejeter — ' + e.message); resolve(); });
+  });
+
+  // 3e-2. HAR absent : le pipeline sort en erreur → le runner rejette (pas de succès).
+  const missingRunDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-runmiss-'));
+  await new Promise((resolve) => {
+    const runner = new PipelineRunner();
+    runner.run({ harPath: path.join(missingRunDir, 'absent.har'), outDir: missingRunDir, noDesc: true, headless: true })
+      .then(() => { assert(false, 'PipelineRunner: HAR absent ne doit PAS résoudre en succès'); resolve(); })
+      .catch((e) => { assert(/^\[/.test(e.message), 'PipelineRunner: HAR absent → rejet structuré'); resolve(); });
+  });
+  fs.rmSync(missingRunDir, { recursive: true, force: true });
+}
+
+// --- 3f. Préservation des résultats partiels ---
+// Le pipeline écrit annonces.json (écriture atomique + checksum) AVANT la phase
+// d'enrichissement. Si l'enrichissement échoue ensuite (ex. navigateur
+// indisponible), les annonces déjà extraites doivent rester lisibles sur disque.
+console.log('\n[3f] Préservation des résultats partiels');
+{
+  const partialOut = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-partial-'));
+  fs.writeFileSync(path.join(partialOut, 'capture.har'), JSON.stringify(har));
+  await new Promise((resolve) => {
+    // Sans --no-desc : le pipeline tente d'enrichir (playwright indisponible ici)
+    // → il échoue APRÈS avoir écrit annonces.json.
+    const child = fork(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), [path.join(partialOut, 'capture.har'), '--out', partialOut, '--headless'], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+    child.on('close', () => {
+      const adsPath = path.join(partialOut, 'annonces.json');
+      assert(fs.existsSync(adsPath), 'partial: annonces.json écrit avant l\'enrichissement');
+      const ads = JSON.parse(fs.readFileSync(adsPath, 'utf8'));
+      assert(Array.isArray(ads) && ads.length >= 1, 'partial: annonces déjà extraites préservées malgré l\'échec d\'enrichissement');
+      fs.rmSync(partialOut, { recursive: true, force: true });
+      resolve();
+    });
+  });
+}
+
 
 // --- 4. Corrections renderer + main ---
 console.log('\n[4] Corrections renderer + main');
@@ -1243,6 +1377,73 @@ assert(/127\.0\.0\.0|10\.0\.0\.0|172\.16\.0\.0|192\.168\.0\.0/.test(urlSecCode),
   assert(isBlockedIpLiteral('10.0.0.1') === true, 'urlSecurity: isBlockedIpLiteral IPv4 privée');
   assert(isBlockedIpLiteral('2001:4860:4860::8888') === false, 'urlSecurity: isBlockedIpLiteral IPv6 publique');
 })();
+
+// urlSecurity : isSafeFetchDestination (contrôle synchrone fail-closed du chemin navigateur)
+(function () {
+  const { isSafeFetchDestination, isHostAllowed } = require('../src/main/utils/urlSecurity');
+
+  // Destinations autorisées (Leboncoin légitime)
+  assert(isSafeFetchDestination('https://www.leboncoin.fr/recherche?text=pc').safe === true,
+    'urlSecurity: URL Leboncoin https autorisée');
+  assert(isSafeFetchDestination('https://img.leboncoin.fr/api/v1/img').safe === true,
+    'urlSecurity: CDN image Leboncoin autorisé (sans allowlist)');
+
+  // Protocoles non http(s)
+  assert(isSafeFetchDestination('file:///etc/passwd').safe === false, 'urlSecurity: file:// refusé');
+  assert(isSafeFetchDestination('ftp://example.com/x').safe === false, 'urlSecurity: ftp:// refusé');
+  assert(isSafeFetchDestination('data:text/html,x').safe === false, 'urlSecurity: data: refusé');
+  assert(isSafeFetchDestination('javascript:alert(1)').safe === false, 'urlSecurity: javascript: refusé');
+
+  // IP privées / loopback / link-local littérales (SSRF)
+  assert(isSafeFetchDestination('http://127.0.0.1/').safe === false, 'urlSecurity: 127.0.0.1 refusé');
+  assert(isSafeFetchDestination('http://169.254.169.254/latest/meta-data/').safe === false,
+    'urlSecurity: endpoint metadata cloud refusé');
+  assert(isSafeFetchDestination('http://10.0.0.5/').safe === false, 'urlSecurity: 10/8 refusé');
+  assert(isSafeFetchDestination('http://[::1]/').safe === false, 'urlSecurity: [::1] refusé');
+  assert(isSafeFetchDestination('http://[fe80::1]/').safe === false, 'urlSecurity: [fe80::1] refusé');
+  assert(isSafeFetchDestination('http://[::ffff:127.0.0.1]/').safe === false, 'urlSecurity: IPv4-mappée refusée');
+
+  // Hostnames locaux
+  assert(isSafeFetchDestination('http://localhost/').safe === false, 'urlSecurity: localhost refusé');
+  assert(isSafeFetchDestination('http://printer.local/').safe === false, 'urlSecurity: *.local refusé');
+  assert(isSafeFetchDestination('http://svc.internal/').safe === false, 'urlSecurity: *.internal refusé');
+
+  // Allowlist : impose le domaine Leboncoin
+  assert(isSafeFetchDestination('http://127.0.0.1/', ['leboncoin.fr']).safe === false,
+    'urlSecurity: IP privée refusée même avec allowlist');
+  assert(isSafeFetchDestination('https://evil.example.com/x', ['leboncoin.fr']).safe === false,
+    'urlSecurity: domaine hors allowlist refusé');
+  assert(isSafeFetchDestination('https://www.leboncoin.fr/recherche', ['leboncoin.fr']).safe === true,
+    'urlSecurity: domaine Leboncoin accepté avec allowlist');
+  assert(isSafeFetchDestination('https://leboncoin.fr.attacker.com/x', ['leboncoin.fr']).safe === false,
+    'urlSecurity: suffixe trompeur (leboncoin.fr.attacker.com) refusé');
+  assert(isHostAllowed('www.leboncoin.fr', ['leboncoin.fr']) === true, 'urlSecurity: isHostAllowed sous-domaine');
+  assert(isHostAllowed('leboncoin.fr.attacker.com', ['leboncoin.fr']) === false, 'urlSecurity: isHostAllowed suffixe trompeur');
+})();
+
+// urlSecurity : validateRemoteUrl fail-closed (DNS vide → refus) + allowlist
+await (async function () {
+  const { validateRemoteUrl } = require('../src/main/utils/urlSecurity');
+  const badProto = await validateRemoteUrl('gopher://example.com/');
+  assert(badProto.safe === false, 'urlSecurity: validateRemoteUrl refuse les protocoles non http(s)');
+  const badIp = await validateRemoteUrl('http://192.168.1.1/');
+  assert(badIp.safe === false, 'urlSecurity: validateRemoteUrl refuse une IP privée littérale');
+  const emptyDns = await validateRemoteUrl('http://definitely-not-a-real-host-xyz-9999.invalid/');
+  assert(emptyDns.safe === false && /fail-closed/.test(emptyDns.reason || ''),
+    'urlSecurity: validateRemoteUrl fail-closed si résolution DNS vide');
+})();
+
+// harCapturer : câblage du contrôle de destination + garde réseau
+{
+  const harSecCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/harCapturer.js'), 'utf8');
+  assert(/isSafeFetchDestination/.test(harSecCode), 'harCapturer: utilise isSafeFetchDestination');
+  assert(/LEBONCOIN_SOURCE_HOSTS/.test(harSecCode), 'harCapturer: allowlist des domaines Leboncoin définie');
+  assert(/isSafeFetchDestination\(searchUrl, LEBONCOIN_SOURCE_HOSTS\)/.test(harSecCode),
+    'harCapturer: valide l\'URL de recherche contre l\'allowlist Leboncoin');
+  assert(/_installNetworkGuard/.test(harSecCode), 'harCapturer: garde réseau installée');
+  assert(/ctx\.route\(/.test(harSecCode), 'harCapturer: intercepte les sous-requêtes (route)');
+  assert(/route\.abort\(/.test(harSecCode), 'harCapturer: bloque les requêtes interdites');
+}
 
 // Data nullability : livraison/mainPropre/type ne sont plus inventés
 const adFieldsCodeFinal = fs.readFileSync(path.join(base, 'services/scraping/adFields.js'), 'utf8');

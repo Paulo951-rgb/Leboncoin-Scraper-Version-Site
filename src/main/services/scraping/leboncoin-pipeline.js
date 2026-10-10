@@ -481,6 +481,17 @@ class DescriptionEnricher {
     // peut être fourni par HarCapturer (opts.userAgent) pour garantir la cohérence
     // d'empreinte avec la phase de capture (mêmes cookies + même UA → 403 évité).
     this._userAgent = opts.userAgent || getRandomUserAgent();
+    // Annulation coopérative : le PipelineRunner envoie SIGINT au sous-processus.
+    // Sans ce drapeau, Node quittait immédiatement (pas de handler SIGINT) →
+    // les checkpoints d'enrichissement n'étaient pas rejoués. On intercepte le
+    // signal pour terminer proprement la boucle et écrire les résultats partiels.
+    this.cancelled = false;
+    this._onSigint = () => {
+      this.cancelled = true;
+      this.shouldStopAll = true;
+      this.logger.warn('⏹️ SIGINT reçu — arrêt de l\'enrichissement, sauvegarde des données partielles.');
+    };
+    process.once('SIGINT', this._onSigint);
     // Rate limiting adaptatif : ajuste dynamiquement les délais selon les
     // signaux du serveur (latence, 429/403, erreurs réseau).
     this.rateLimiter = new AdaptiveRateLimiter({
@@ -683,8 +694,8 @@ class DescriptionEnricher {
     let batchIndex = 0;
 
     for (let i = 0; i < targets.length; i += concurrency) {
-      if (this.shouldStopAll) {
-        this.logger.debug(`[DescriptionEnricher] Arrêt demandé (shouldStopAll=true) — sortie de la boucle à ${done}/${targets.length}.`);
+      if (this.shouldStopAll || this.cancelled) {
+        this.logger.debug(`[DescriptionEnricher] Arrêt demandé (shouldStopAll=${this.shouldStopAll}, cancelled=${this.cancelled}) — sortie de la boucle à ${done}/${targets.length}.`);
         break;
       }
 
@@ -804,6 +815,7 @@ class DescriptionEnricher {
     this.logger.info(`Session terminée : ${successCount}/${targets.length} récupérées.`);
     this.logger.debug(`[DescriptionEnricher] Bilan final : ${successCount} réussies | ${notFoundCount} sans description trouvée | ${blockedCount} bloquées (403/429) | ${httpErrorCount} autres erreurs HTTP/fetch | arrêt préventif : ${this.shouldStopAll ? 'OUI' : 'non'}.`);
     } finally {
+      process.removeListener('SIGINT', this._onSigint);
       // Garanti la fermeture du navigateur/contexte/page même en cas d'erreur
       // (ex. createStealthContext ou fetchBatchInPage lance) — sinon Chromium
       // restait orphan (processus zombie) et la RAM/sockets fuyaient.
