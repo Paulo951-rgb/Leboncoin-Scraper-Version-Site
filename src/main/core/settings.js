@@ -44,8 +44,53 @@ function loadSettings() {
   }
 }
 
+/**
+ * Valide et normalise un patch de paramètres venant du renderer.
+ * Ne conserve que les clés connues avec un type/une plage valides : un renderer
+ * compromis (ou une valeur erronée) ne peut donc pas injecter de clés
+ * arbitraires dans user-settings.json ni pousser `autoCleanJobsDays` à une
+ * valeur absurde qui déclencherait une purge massive de jobs.
+ * @param {Object} patch
+ * @returns {Object} patch nettoyé
+ */
+function sanitizeSettingsPatch(patch) {
+  if (!patch || typeof patch !== 'object') return {};
+  const out = {};
+  const intInRange = (v, min, max) => {
+    const n = parseInt(v, 10);
+    return Number.isFinite(n) && n >= min && n <= max ? n : undefined;
+  };
+
+  if ('autoCleanHarDays' in patch) {
+    const n = intInRange(patch.autoCleanHarDays, 0, 3650);
+    if (n !== undefined) out.autoCleanHarDays = n;
+  }
+  if ('logRetentionDays' in patch) {
+    const n = intInRange(patch.logRetentionDays, 1, 3650);
+    if (n !== undefined) out.logRetentionDays = n;
+  }
+  if ('autoCleanJobsDays' in patch) {
+    const n = intInRange(patch.autoCleanJobsDays, 0, 3650);
+    if (n !== undefined) out.autoCleanJobsDays = n;
+  }
+  if ('pageDelayMs' in patch) {
+    const n = intInRange(patch.pageDelayMs, 0, 60000);
+    if (n !== undefined) out.pageDelayMs = n;
+  }
+  if ('scrapeSpeed' in patch) {
+    if (['moyen', 'rapide', 'ultra-rapide'].includes(patch.scrapeSpeed)) out.scrapeSpeed = patch.scrapeSpeed;
+  }
+  if ('headless' in patch) {
+    if (typeof patch.headless === 'boolean') out.headless = patch.headless;
+  }
+  if ('includeSellerData' in patch) {
+    if (typeof patch.includeSellerData === 'boolean') out.includeSellerData = patch.includeSellerData;
+  }
+  return out;
+}
+
 function saveSettings(patch) {
-  const merged = { ...loadSettings(), ...(patch && typeof patch === 'object' ? patch : {}) };
+  const merged = { ...loadSettings(), ...sanitizeSettingsPatch(patch) };
   try {
     fs.mkdirSync(path.dirname(getSettingsPath()), { recursive: true });
     // Écriture atomique : un crash pendant fs.writeFileSync laissait
@@ -57,4 +102,4 @@ function saveSettings(patch) {
   return merged;
 }
 
-module.exports = { loadSettings, saveSettings, SETTINGS_DEFAULTS };
+module.exports = { loadSettings, saveSettings, sanitizeSettingsPatch, SETTINGS_DEFAULTS };

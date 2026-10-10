@@ -2007,6 +2007,39 @@ console.log('\n[21] Phase 3 lot 2 (UI/robustesse)');
   console.log('\n[21] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [22] NON-RÉGRESSION — validation des paramètres (surface IPC config:save)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[22] Validation des paramètres');
+(() => {
+  const { sanitizeSettingsPatch } = require('../src/main/core/settings');
+
+  // Clés inconnues rejetées (pas d'injection arbitraire dans user-settings.json)
+  assert(Object.keys(sanitizeSettingsPatch({ evilKey: 'x', __proto__: { polluted: 1 } })).length === 0, 'settings: clés inconnues rejetées');
+
+  // autoCleanJobsDays hors plage rejeté (évite purge massive)
+  assert(sanitizeSettingsPatch({ autoCleanJobsDays: 999999 }).autoCleanJobsDays === undefined, 'settings: autoCleanJobsDays hors plage rejeté');
+  assert(sanitizeSettingsPatch({ autoCleanJobsDays: -5 }).autoCleanJobsDays === undefined, 'settings: autoCleanJobsDays négatif rejeté');
+  assert(sanitizeSettingsPatch({ autoCleanJobsDays: 30 }).autoCleanJobsDays === 30, 'settings: autoCleanJobsDays valide accepté');
+
+  // scrapeSpeed énuméré
+  assert(sanitizeSettingsPatch({ scrapeSpeed: 'turbo' }).scrapeSpeed === undefined, 'settings: scrapeSpeed inconnu rejeté');
+  assert(sanitizeSettingsPatch({ scrapeSpeed: 'rapide' }).scrapeSpeed === 'rapide', 'settings: scrapeSpeed valide accepté');
+
+  // booléens stricts
+  assert(sanitizeSettingsPatch({ headless: 'yes' }).headless === undefined, 'settings: headless non booléen rejeté');
+  assert(sanitizeSettingsPatch({ headless: false }).headless === false, 'settings: headless=false accepté');
+
+  // pageDelayMs borné
+  assert(sanitizeSettingsPatch({ pageDelayMs: 999999 }).pageDelayMs === undefined, 'settings: pageDelayMs hors plage rejeté');
+  assert(sanitizeSettingsPatch({ pageDelayMs: 1000 }).pageDelayMs === 1000, 'settings: pageDelayMs valide accepté');
+
+  // patch non-objet
+  assert(Object.keys(sanitizeSettingsPatch(null)).length === 0, 'settings: patch null → objet vide');
+
+  console.log('\n[22] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

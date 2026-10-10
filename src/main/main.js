@@ -196,10 +196,11 @@ app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) createWindow();
 });
 
-// Verrouille les <webview> créés dynamiquement par le renderer. webviewTag:true
-// est activé sur la fenêtre principale, donc sans ce handler un renderer
-// compromis pourrait créer un <webview> avec nodeIntegration:true et contourner
-// tout le sandboxing. On force les webpreferences sûres sur TOUS les webview.
+// Défense en profondeur pour les <webview>. webviewTag est DÉSACTIVÉ sur la
+// fenêtre principale (aucun <webview> n'est utilisé), mais ce handler reste en
+// place : s'il était un jour réactivé, un renderer compromis ne pourrait pas
+// créer un <webview> avec nodeIntegration:true contournant le sandboxing. On
+// force donc les webpreferences sûres sur TOUT webview attaché.
 app.on('web-contents-created', (_event, contents) => {
   contents.on('will-attach-webview', (_e, webPreferences, params) => {
     // Tout preload non autorisé est supprimé (sécurité : un renderer
