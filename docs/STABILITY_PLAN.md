@@ -29,6 +29,17 @@
 | 7 | Hygiène des imports (`dataProfiles.js`) | ✅ | scan + suite |
 | 8 | Documentation (README/AGENTS/docs) | ✅ | revue |
 
+### Phase 2 (finalisation)
+
+| Lot | Objet | Statut | Vérification |
+|---|---|---|---|
+| P2-1 | Sécurisation du chemin Playwright (KI-3) : `isSafeFetchDestination` + allowlist URL de recherche + route-guard + `validateRemoteUrl` fail-closed | ✅ | Tests `urlSecurity`, `harCapturer` |
+| P2-2 | Audit dépendances (`npm audit`/`outdated`) + correctifs en plage | ✅ | 17→15 vulns |
+| P2-3 | Vérification config build Windows | ⚠️ partiel | `build/icon.ico` manquant (KI-7) ; `.exe` non généré |
+| P2-4 | Tests intégration + scénarios d'erreur (HAR absent/invalide/données invalides) | ✅ | Tests `[3d]`, `[3e]` |
+| P2-5 | **Annulation pendant l'enrichissement** (P1 résiduel) : code 130 + SIGINT coopératif + résultats partiels | ✅ | Tests `[3b2]`, `[3f]` |
+| P2-6 | Cas limites médiane + validation données | ✅ | Tests AdStats |
+
 ## 3. Dépendances entre corrections
 
 - La correction d'annulation (Lot 6) dépend du contrat de sortie du pipeline

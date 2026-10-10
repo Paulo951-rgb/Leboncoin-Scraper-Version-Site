@@ -24,16 +24,21 @@ stabilisation. Pour chaque entrée : impact, circonstances, prochaines étapes.
   est avéré ; sinon maintenir une checklist manuelle (démarrage de job, arrêt,
   suppression de job, changement de thème, mode hors-ligne).
 
-## KI-3 — `urlSecurity.validateRemoteUrl` n'est pas sur le chemin Playwright *(P2, sécurité)*
+## KI-3 — `urlSecurity` : couverture DNS incomplète sur le chemin navigateur *(P2, sécurité)*
 
-- **Impact** : cette fonction ne protège pas les navigations Playwright ni les
-  `fetch` du pipeline. La protection réelle des `fetch` repose sur l'allowlist
-  `ALLOWED_FETCH_HOSTS` du pipeline.
-- **Circonstances** : toute nouvelle utilisation de `validateRemoteUrl` pour une
-  requête réseau.
-- **Prochaines étapes** : rendre la fonction *fail-closed* (refuser si la
-  résolution DNS échoue/vide) avant de l'utiliser pour sécuriser un accès
-  réseau, et la câbler explicitement sur le chemin concerné.
+- **Statut : partiellement résolu (phase 2).** `isSafeFetchDestination` (synchrone,
+  fail-closed) est désormais **câblé** sur le chemin Playwright :
+  - `HarCapturer.capture()` refuse une URL de recherche hors domaines Leboncoin
+    ou visant une IP interdite (allowlist `LEBONCOIN_SOURCE_HOSTS`) ;
+  - `_installNetworkGuard` intercepte toutes les sous-requêtes (`ctx.route('**/*')`)
+    et bloque IP privées/locales et schémas exotiques ;
+  - `validateRemoteUrl` est fail-closed si la résolution DNS est vide.
+- **Limite résiduelle** : le filtre synchroné ne fait **pas** de résolution DNS
+  (impossible dans le callback `route` sans blocage). Un hostname arbitraire
+  résolvant vers une IP privée (DNS rebinding) n'est pas détecté sur les
+  sous-ressources. Documenté dans le code.
+- **Prochaines étapes** : envisager un proxy applicatif ou une résolution DNS
+  asynchrone préalable si le risque rebinding devient pertinent.
 
 ## KI-4 — Repli de chiffrement des secrets à protection réduite *(P3, sécurité)*
 
@@ -45,13 +50,32 @@ stabilisation. Pour chaque entrée : impact, circonstances, prochaines étapes.
   `SecretStore.isUsingOsKeychain()`) et, à terme, refuser le stockage plutôt que
   de dégrader silencieusement.
 
-## KI-5 — Dépendances non auditées contre les vulnérabilités *(P3)*
+## KI-5 — Dépendances vulnérables non corrigeables sans majeur *(P2)*
 
-- **Impact** : `npm audit` n'a pas pu être exécuté (accès registre non garanti).
-  Des CVE transitives dans Playwright/Electron sont possibles.
-- **Prochaines étapes** : lancer `npm audit` et `npm outdated` dans un
-  environnement avec accès registre ; évaluer les mises à jour majeures
-  séparément (compatibilité API Playwright/Electron).
+- **Impact** : `npm audit` (phase 2) → **15 vulnérabilités** (4 modérées, 10
+  élevées, 1 critique) après les correctifs en plage. Détail :
+  - `tar` (critique, transitive electron-builder) → nécessite electron-builder@26 ;
+  - `playwright` (élevée, **directe**) → nécessite playwright@1.64 (chemin
+    Chromium/`extraResources` à revalider) ; CVE « téléchargement sans vérif TLS »
+    **hors** du chemin runtime ;
+  - `electron` + `@electron/get`/`global-agent`/`roarr`/`sprintf-js` → nécessitent
+    electron@44 (majeur) ;
+  - `electron-builder` et ses sous-paquets → outils de **build** (non embarqués
+    dans le binaire final), mise à jour majeure.
+- **Corrigé en phase 2** (en plage) : `brace-expansion`, `http-cache-semantics`.
+- **Prochaines étapes** : planifier un lot « dépendances » avec majeur Playwright
+  + Electron + electron-builder, et une campagne de packaging/capture après.
+
+## KI-7 — Icône de build manquante *(P2, packaging)*
+
+- **Impact** : `build/icon.ico` est référencé par `package.json` mais **absent**
+  du dépôt. La cible **portable** d'electron-builder échoue (« icon.ico not
+  found ») ; la cible NSIS utilise l'icône par défaut d'Electron.
+- **Circonstances** : `npm run dist` / `npm run pack`.
+- **Prochaines étapes** : fournir `build/icon.ico` (≥ 256×256, multi-résolutions)
+  ou retirer `icon`/`installerIcon`/`uninstallerIcon` de la config pour accepter
+  l'icône par défaut. Non corrigé ici car aucune ressource graphique n'est
+  disponible dans l'environnement.
 
 ## KI-6 — Blocage anti-bot Leboncoin (comportement normal, documenté) *(P3)*
 

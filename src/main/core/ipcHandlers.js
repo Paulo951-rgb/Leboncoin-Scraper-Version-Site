@@ -234,7 +234,7 @@ function setupIpcHandlers(getMainWindow) {
       });
 
       const t0Pipeline = Date.now();
-      await activeRunner.run({
+      const pipelineExit = await activeRunner.run({
         harPath,
         outDir: resultsDir,
         noDesc,
@@ -252,6 +252,14 @@ function setupIpcHandlers(getMainWindow) {
       sendLog({ level: 'debug', message: `[job:start] Phase pipeline terminée en ${Math.round((Date.now() - t0Pipeline) / 1000)}s.` });
 
       activeRunner = null;
+
+      // Le runner renvoie 130 si le pipeline forké a été interrompu (SIGINT).
+      // Sans ce test, une annulation PENDANT l'enrichissement était rapportée
+      // comme un succès. Les résultats partiels restent sur disque (écritures
+      // atomiques + checkpoints), on se contente de corriger l'état final.
+      if (pipelineExit === 130) {
+        throw Object.assign(new Error('Scraping annulé par l\'utilisateur.'), { _cancelled: true });
+      }
 
       const jsonPath = path.join(resultsDir, 'annonces.json');
 

@@ -193,6 +193,23 @@ Configuration dans `package.json` → clé `build` :
   d'enrichissement et émettre `sendStatus({ state: 'cancelled' })` (état dédié,
   distinct de `completed` et `error`). Le renderer traite `cancelled` comme
   terminal. Sans cela, « Arrêter » affichait « terminé avec succès ».
+- **Annulation PENDANT l'enrichissement** : `PipelineRunner.run()` renvoie `130`
+  si le pipeline forké a été interrompu. `ipcHandlers` DOIT tester
+  `pipelineExit === 130` et lever une erreur `_cancelled` — sinon une annulation
+  pendant l'enrichissement était rapportée « terminé avec succès ». Côté
+  pipeline, un handler coopératif `process.once('SIGINT')` positionne
+  `cancelled=true`/`shouldStopAll=true` pour écrire les résultats partiels et
+  fermer le navigateur (handler retiré en `finally`).
+- **Sécurité du chemin Playwright (KI-3)** : l'URL de recherche (entrée
+  utilisateur) est validée par `isSafeFetchDestination(searchUrl, LEBONCOIN_SOURCE_HOSTS)`
+  AVANT de lancer Chromium. Toutes les sous-requêtes passent par
+  `_installNetworkGuard` (`ctx.route('**/*')`) qui bloque IP privées/locales et
+  schémas exotiques. LIMITE : pas de résolution DNS dans le callback `route`
+  (rebinding DNS non détecté sur les sous-ressources).
+- **`isHostAllowed` inclusif** (domaine + sous-domaines) : rejette les suffixes
+  trompeurs (`leboncoin.fr.attacker.com`) grâce au préfixe `.`.
+- **IPv6 littérales** : `URL.hostname` conserve les crochets (`[::1]`) → les
+  retirer avant `net.isIP`, sinon les IP privées IPv6 passent les contrôles.
 - **Clés d'export vs clés du modèle** : `filterAdByFields` traduit les clés
   d'export (`ville`, `codePostal`, `vendeurNbAvis`, `vendeurAnciennete`) vers les
   clés du modèle `normalizeAd` (`city`, `zipcode`, `nombreAvis`,

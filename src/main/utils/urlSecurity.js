@@ -91,6 +91,67 @@ async function resolveHostnameToIps(hostname) {
 }
 
 /**
+ * Vérifie si un hostname correspond à une allowlist (sous-domaines inclus).
+ * @param {string} hostname
+ * @param {string[]} allowedHosts - ex: ['leboncoin.fr'] ou ['*.leboncoin.fr']
+ */
+function isHostAllowed(hostname, allowedHosts) {
+  if (!Array.isArray(allowedHosts) || allowedHosts.length === 0) return false;
+  const host = String(hostname || '').toLowerCase();
+  return allowedHosts.some((h) => {
+    let a = String(h || '').toLowerCase();
+    if (a.startsWith('*.')) a = a.slice(2);
+    // Domaine inclusif : l'entrée autorise le domaine exact ET ses sous-domaines.
+    // Le préfixe '.' empêche les suffixes trompeurs (leboncoin.fr.attacker.com).
+    return host === a || host.endsWith('.' + a);
+  });
+}
+
+/**
+ * Contrôle SYNCHRONE et *fail-closed* de la destination d'une sous-requête
+ * navigateur (Playwright). Ne fait AUCUNE résolution DNS (impossible de façon
+ * fiable dans le callback `route` sans bloquer) : bloque donc les destinations
+ * dangereuses structurellement identifiables.
+ *
+ * Contrairement à `validateRemoteUrl` (asynchrone, best-effort), cette fonction
+ * est conçue pour un filtrage réseau de défense en profondeur :
+ *  - protocole strictement limité à http(s) (les schémas exotiques sont refusés) ;
+ *  - refus de toute IP LITTÉRALE privée/interdite (v4, v6, IPv4-mappée) ;
+ *  - refus des hostnames locaux (localhost, *.local, *.internal) ;
+ *  - si une allowlist est fournie, refus de tout hostname hors allowlist.
+ *
+ * @param {string} urlStr
+ * @param {string[]} [allowedHosts] - allowlist ; si fournie, impose le domaine.
+ * @returns {{ safe: boolean, reason?: string }}
+ */
+function isSafeFetchDestination(urlStr, allowedHosts) {
+  let parsed;
+  try {
+    parsed = new URL(urlStr);
+  } catch {
+    return { safe: false, reason: 'URL invalide' };
+  }
+  if (parsed.protocol !== 'http:' && parsed.protocol !== 'https:') {
+    return { safe: false, reason: `Protocole non autorisé: ${parsed.protocol}` };
+  }
+  // Node URL conserve les crochets autour des IPv6 littérales ([::1]) : on les
+  // retire pour que net.isIP reconnaisse l'adresse et que isBlockedIpLiteral
+  // s'applique (sinon les IP privées IPv6 littérales passeraient le contrôle).
+  const hostname = parsed.hostname.replace(/^\[|\]$/g, '');
+  if (hostname === 'localhost' || hostname.endsWith('.local') || hostname.endsWith('.internal')) {
+    return { safe: false, reason: `Hostname local interdit: ${hostname}` };
+  }
+  // IP littérale (le navigateur se connecterait directement, sans DNS).
+  if (net.isIP(hostname) && isBlockedIpLiteral(hostname)) {
+    return { safe: false, reason: `IP privée/interdite: ${hostname}` };
+  }
+  if (Array.isArray(allowedHosts) && allowedHosts.length > 0 && !isHostAllowed(hostname, allowedHosts)) {
+    return { safe: false, reason: `Hostname hors allowlist: ${hostname}` };
+  }
+  return { safe: true };
+}
+
+/**
  * Valide qu'une URL distante est sûre pour un fetch réseau.
  * Bloque:
  *  - protocoles non autorisés (seul http/https)
@@ -130,12 +191,13 @@ async function validateRemoteUrl(url, opts = {}) {
     }
   } else {
     // Résolution DNS pour vérifier les IPs associées.
-    // LIMITE CONNUE : si la résolution échoue (DNS vide/erreur), on ne peut pas
-    // vérifier les IPs → on laisse passer ici. Cette fonction n'est PAS utilisée
-    // pour sécuriser le chemin Playwright (voir ALLOWED_FETCH_HOSTS dans le
-    // pipeline). Toute future utilisation pour un fetch réseau doit refuser en
-    // l'absence de résolution (fail-closed) plutôt que de continuer.
+    // FAIL-CLOSED : si la résolution ne renvoie AUCUNE adresse (DNS vide/erreur),
+    // on refuse. Sinon un domaine dont la résolution échoue contournerait la
+    // vérification et laisserait passer une destination non contrôlée.
     const ips = await resolveHostnameToIps(hostname);
+    if (ips.length === 0) {
+      return { safe: false, reason: `Résolution DNS vide/échouée (fail-closed): ${hostname}` };
+    }
     for (const ip of ips) {
       if (isBlockedIpLiteral(ip)) {
         return { safe: false, reason: `Résolution DNS vers IP privée: ${hostname} -> ${ip}` };
@@ -145,14 +207,7 @@ async function validateRemoteUrl(url, opts = {}) {
 
   // Allowlist: si fournie, le hostname doit y figurer.
   if (Array.isArray(opts.allowedHosts) && opts.allowedHosts.length > 0) {
-    const allowed = opts.allowedHosts.some((h) => {
-      if (h.startsWith('*.')) {
-        const suffix = h.slice(2);
-        return hostname === suffix || hostname.endsWith('.' + suffix);
-      }
-      return hostname === h;
-    });
-    if (!allowed) {
+    if (!isHostAllowed(hostname, opts.allowedHosts)) {
       return { safe: false, reason: `Hostname hors allowlist: ${hostname}` };
     }
   }
@@ -172,4 +227,4 @@ async function validateRemoteUrl(url, opts = {}) {
   return { safe: true };
 }
 
-module.exports = { validateRemoteUrl, isPrivateIPv4, isPrivateIPv6, isBlockedIpLiteral, resolveHostnameToIps, PRIVATE_RANGES };
+module.exports = { validateRemoteUrl, isPrivateIPv4, isPrivateIPv6, isBlockedIpLiteral, isHostAllowed, isSafeFetchDestination, resolveHostnameToIps, PRIVATE_RANGES };
