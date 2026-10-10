@@ -6,27 +6,18 @@
   <title>Leboncoin Scraper Pro</title>
   <link rel="stylesheet" href="styles.css">
   <!-- Content-Security-Policy : restrictions de sécurité pour l'application Electron.
+       Les bibliothèques d'interface (Leaflet, Chart.js) sont désormais SERVIES
+       LOCALEMENT depuis src/renderer/vendor/ (plus de CDN au chargement → l'UI
+       fonctionne même si un CDN est bloqué/indisponible). Seules les données
+       réseau légitimes restent autorisées : géocodage (geo.api.gouv.fr), API
+       Leboncoin et tuiles OpenStreetMap.
        Note: 'unsafe-inline' est conservé car l'UI génère des onclick dynamiques
-       via innerHTML. Une migration vers addEventListener est prévue. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net https://unpkg.com; style-src 'self' 'unsafe-inline' https://unpkg.com; img-src 'self' data: https: http:; font-src 'self' https://; connect-src 'self' https:; frame-src 'self';">
-  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
-  <!-- Leaflet.js pour la Carte Interactive (Sécurisé pour l'environnement hybride Electron) -->
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
-  <script>
-    // Évite le conflit CommonJS d'Electron en masquant temporairement module
-    if (typeof module === 'object') {
-      window.tempModule = module;
-      module = undefined;
-    }
-  </script>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
-  <script>
-    // Restaure l'environnement Node d'Electron juste après le chargement de Leaflet
-    if (window.tempModule) {
-      module = window.tempModule;
-      delete window.tempModule;
-    }
-  </script>
+       via innerHTML. Une migration vers addEventListener reste souhaitable. -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data:; connect-src 'self' https:; frame-src 'self';">
+  <script src="vendor/chart.umd.min.js"></script>
+  <!-- Leaflet.js pour la Carte Interactive (bibliothèque locale embarquée) -->
+  <link rel="stylesheet" href="vendor/leaflet.css" />
+  <script src="vendor/leaflet.js"></script>
 </head>
 <body>
   <div class="app-container">
@@ -519,6 +510,7 @@
               </label>
             </div>
             <div id="leafletMap" class="leaflet-map" style="height: 350px;"></div>
+            <p id="mapStatus" class="map-status hidden"></p>
           </div>
 
           <div class="charts-grid" style="margin-top:15px;">

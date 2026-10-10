@@ -114,13 +114,16 @@ Les seules connexions réseau externes sont :
 - vers le site ciblé pour la collecte ;
 - vers l'API de géocodage du gouvernement français (geo.api.gouv.fr) pour
   positionner les villes sur la carte (si la carte est utilisée) ;
-- vers des CDN publics pour charger les bibliothèques d'interface : Chart.js
-  (`cdn.jsdelivr.net`) et Leaflet (`unpkg.com`) au chargement de la fenêtre ;
 - vers les tuiles de fond de carte OpenStreetMap (`*.tile.openstreetmap.org`)
   lorsque la carte est affichée.
 
-Aucune de ces connexions ne transmet vos données scrapées : les CDN ne servent
-qu'à charger du code et des tuiles de carte côté interface. Si l'appareil est
+Les bibliothèques d'interface (Chart.js pour les graphiques, Leaflet pour la
+carte) sont **embarquées localement** dans `src/renderer/vendor/` et non plus
+chargées depuis un CDN public. L'interface (graphiques, tableaux, onglets)
+fonctionne donc même sans accès à un CDN ; seule la carte a besoin d'une
+connexion pour ses tuiles OpenStreetMap.
+
+Aucune de ces connexions ne transmet vos données scrapées. Si l'appareil est
 hors ligne, l'application reste utilisable pour consulter les jobs déjà
 scrapés ; seuls la carte et les graphiques peuvent ne pas s'afficher.
 

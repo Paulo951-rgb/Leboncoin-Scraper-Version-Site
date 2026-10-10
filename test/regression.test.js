@@ -2160,6 +2160,108 @@ console.log('\n[26] Contrat IPC preload ↔ main');
   console.log('\n[26] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [27] CARTE (statsModule) — logique pure de sélection et validation coords
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[27] Carte statsModule (logique pure)');
+(() => {
+  const vm = require('vm');
+  const repoRoot = path.join(__dirname, '..');
+  const code = fs.readFileSync(path.join(repoRoot, 'src/renderer/statsModule.js'), 'utf8');
+
+  const fakeEl = {
+    textContent: '', innerHTML: '', value: 'ALL', checked: true, style: {},
+    classList: { add() {}, remove() {}, toggle() {}, contains() { return false; } },
+    addEventListener() {},
+  };
+  const windowObj = { api: { getHistory: async () => [] } };
+  const sandbox = {
+    window: windowObj,
+    document: { getElementById: () => fakeEl, querySelectorAll: () => [] },
+    localStorage: { getItem: () => null, setItem: () => {}, removeItem: () => {} },
+    escapeHtml: (s) => String(s == null ? '' : s),
+    escapePath: (s) => String(s == null ? '' : s),
+    console: { log() {}, warn() {}, error() {} },
+    setTimeout, clearTimeout, fetch: async () => { throw new Error('no net'); },
+    AbortController,
+    // Globals fournis par app.js/appState.js en exécution réelle.
+    statsSessionSelect: fakeEl,
+    populateSessionDropdown: () => {},
+  };
+  sandbox.globalThis = sandbox;
+  vm.createContext(sandbox);
+  vm.runInContext(code, sandbox);
+
+  const { computeMapPoints, isValidLatLng, _deliveryTypeOf } = windowObj;
+  assert(typeof computeMapPoints === 'function', 'carte: computeMapPoints exposé');
+  assert(typeof isValidLatLng === 'function', 'carte: isValidLatLng exposé');
+
+  // Déduplication par id (une annonce présente dans 2 sessions n'apparaît qu'une fois)
+  const ads = [
+    { id: 'a1', title: 'Vélo', deliveryType: 'main_propre', city: 'Lyon' },
+    { id: 'a1', title: 'Vélo', deliveryType: 'main_propre', city: 'Lyon' }, // doublon
+    { id: 'a2', title: 'Canapé', deliveryType: 'livraison', city: 'Paris' },
+    { id: 'a3', title: 'Table', deliveryType: 'les_deux', city: 'Nantes' },
+    { id: 'a4', title: 'Lampe', deliveryType: 'inconnu', city: 'Lille' },
+  ];
+  const all = computeMapPoints(ads, false);
+  assert(all.deduped.length === 4, 'carte: déduplication id → 4 annonces uniques');
+  assert(all.target.length === 4, 'carte: sans filtre → toutes les annonces uniques');
+
+  const mp = computeMapPoints(ads, true);
+  assert(mp.target.length === 2, 'carte: filtre main propre → main_propre + les_deux (a1, a3)');
+  assert(mp.target.every((a) => a.id === 'a1' || a.id === 'a3'), 'carte: filtre main propre garde les bons ids');
+
+  // Dédup : la clé est id || url || title (le premier disponible).
+  const byUrl = computeMapPoints([{ url: 'u1' }, { url: 'u1' }], false);
+  assert(byUrl.deduped.length === 1, 'carte: dédup par url quand id absent');
+  const mixed = computeMapPoints([
+    { url: 'u1', title: 'X' }, { url: 'u1', title: 'X' }, { title: 'Y' },
+  ], false);
+  assert(mixed.deduped.length === 2, 'carte: dédup par url (2 entrées url=u1 → 1) + titre Y → 2 uniques');
+
+  // Rétro-compat : deliveryType absent → calcul depuis livraison/mainPropre
+  assert(_deliveryTypeOf({ livraison: true, mainPropre: true }) === 'les_deux', 'carte: compat livraison+mainPropre → les_deux');
+  assert(_deliveryTypeOf({ shipping: true, handDelivery: true }) === 'les_deux', 'carte: compat shipping/handDelivery → les_deux');
+  const compat = computeMapPoints([{ id: 'c1', mainPropre: true }], true);
+  assert(compat.target.length === 1, 'carte: filtre main propre via rétro-compat');
+
+  // Validation des coordonnées : valides acceptées, invalides rejetées
+  assert(isValidLatLng([48.85, 2.35]) === true, 'carte: coords France valides');
+  assert(isValidLatLng([-90, -180]) === true, 'carte: bornes min valides');
+  assert(isValidLatLng([90, 180]) === true, 'carte: bornes max valides');
+  assert(isValidLatLng(null) === false, 'carte: null rejeté');
+  assert(isValidLatLng([]) === false, 'carte: tableau vide rejeté');
+  assert(isValidLatLng([48.85]) === false, 'carte: un seul élément rejeté');
+  assert(isValidLatLng([NaN, 2.35]) === false, 'carte: NaN rejeté');
+  assert(isValidLatLng([91, 2.35]) === false, 'carte: latitude hors bornes rejetée');
+  assert(isValidLatLng([48.85, 181]) === false, 'carte: longitude hors bornes rejetée');
+  assert(isValidLatLng(['48.85', '2.35']) === false, 'carte: chaînes numériques rejetées');
+
+  // Le module ne doit pas écrire dans le conteneur Leaflet (détruirait la carte) :
+  // l'état passe par mapStatus, et les marqueurs par un L.layerGroup.
+  assert(!/mapEl\.innerHTML/.test(code), 'carte: ne détruit pas le conteneur #leafletMap (pas d\'innerHTML dessus)');
+  assert(/mapMarkerLayer\.clearLayers\(\)/.test(code), 'carte: calque de marqueurs vidé à chaque rendu (anti-doublons)');
+  assert(/L\.layerGroup\(\)/.test(code), 'carte: marqueurs dans un L.layerGroup');
+  assert(/getElementById\('mapStatus'\)/.test(code), 'carte: messages d\'état via #mapStatus');
+
+  // Fiabilité hors ligne : Leaflet/Chart.js sont embarqués localement, plus de
+  // CDN public au chargement de l'interface (l'UI ne dépend plus d'un
+  // fournisseur externe pour s'afficher).
+  const html = fs.readFileSync(path.join(repoRoot, 'src/renderer/index.html'), 'utf8');
+  assert(/src="vendor\/leaflet\.js"/.test(html), 'carte: Leaflet servi localement (vendor/leaflet.js)');
+  assert(/href="vendor\/leaflet\.css"/.test(html), 'carte: CSS Leaflet servi localement (vendor/leaflet.css)');
+  assert(/src="vendor\/chart\.umd\.min\.js"/.test(html), 'graphiques: Chart.js servi localement (vendor/chart.umd.min.js)');
+  assert(!/cdn\.jsdelivr\.net|unpkg\.com/.test(html), 'CSP/HTML: plus aucune référence CDN au chargement');
+  assert(/script-src 'self' 'unsafe-inline';/.test(html) && !/script-src [^;]*https:/.test(html), 'CSP: script-src limité à self (pas de CDN)');
+  for (const f of ['vendor/leaflet.js', 'vendor/leaflet.css', 'vendor/chart.umd.min.js',
+                   'vendor/images/marker-icon.png', 'vendor/images/marker-shadow.png']) {
+    assert(fs.existsSync(path.join(repoRoot, 'src/renderer', f)), `carte: ressource locale présente → ${f}`);
+  }
+
+  console.log('\n[27] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

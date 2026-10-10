@@ -8,6 +8,7 @@ let viewMode = localStorage.getItem('explorer-view') || 'table';
 let compareSet = new Set();
 let starredAds = new Set();
 let mapInstance = null;
+let mapMarkerLayer = null;
 let mapRenderGen = 0;
 let pendingDeleteJobId = null;
 let isConfirming = false;
