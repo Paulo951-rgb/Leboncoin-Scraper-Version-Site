@@ -35,17 +35,14 @@ async function refreshSellerDataSetting() {
 }
 
 function applySellerDataVisibility() {
-  const hidden = includeSellerData ? '' : 'hidden';
   // Filtres vendeur dans l'explorateur
   const sellerFilterRow = document.getElementById('filterSellerType')?.closest('.form-group');
   const ratingFilterRow = document.getElementById('filterMinRating')?.closest('.form-group');
   if (sellerFilterRow) sellerFilterRow.classList.toggle('hidden', !includeSellerData);
   if (ratingFilterRow) ratingFilterRow.classList.toggle('hidden', !includeSellerData);
 
-  // Colonne Vendeur dans le tableau explorateur
-  const sellerColHeader = document.querySelector('th[style*="Vendeur"]') || document.querySelector('th:nth-child(9)');
-  // On ne peut pas cacher facilement une colonne de tableau sans restructurer,
-  // mais on peut masquer les chips vendeur dans le rendu des cellules via CSS.
+  // Masque la colonne Vendeur du tableau via la classe dédiée (l'ancien
+  // sélecteur `th[style*="Vendeur"]`/nth-child était fragile et retournait null).
   if (!includeSellerData) {
     document.body.classList.add('seller-data-hidden');
   } else {

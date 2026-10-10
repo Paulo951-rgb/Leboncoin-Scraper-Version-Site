@@ -1,6 +1,11 @@
 #!/usr/bin/env node
 /* =========================================================================
  * leboncoin-pipeline.js (Batching In-Page + Exit Propre)
+ *
+ * Codes de sortie (contrat avec pipelineRunner.js) :
+ *   0 → succès (au moins une annonce écrite)
+ *   1 → erreur fatale (exception non gérée : HAR illisible, etc.)
+ *   2 → échec explicite « aucune donnée exploitable » (HAR vide, 0 annonce)
  * =========================================================================
  */
 
@@ -8,15 +13,14 @@
 
 const fs = require('fs');
 const path = require('path');
-const { sleep, randomDelay, atomicWriteFileSync, cleanText } = require('../../utils/helpers');
+const { sleep, atomicWriteFileSync, cleanText } = require('../../utils/helpers');
 const { summarizeAds, summarizeHarEntries, truncate, formatBytes, formatMs } = require('../../utils/diagnostics');
 const { getRandomUserAgent } = require('./userAgents');
 const { writeWithChecksum } = require('../../utils/integrity');
 const { AdaptiveRateLimiter } = require('../../utils/rateLimiter');
-const { validateRemoteUrl } = require('../../utils/urlSecurity');
 const adFields = require('./adFields');
-const { ErrorCodes, createError, classifyError } = require('./errorCodes');
-const { filterAdByFields, toReadableBlock, ALL_FIELD_KEYS } = require('../exporting/exportFields');
+const { ErrorCodes, createError } = require('./errorCodes');
+const { filterAdByFields, toReadableBlock } = require('../exporting/exportFields');
 const { DEFAULT_PROFILE_FIELDS } = require('../exporting/dataProfiles');
 
 const DEFAULTS = Object.freeze({
@@ -942,6 +946,10 @@ async function main() {
       logger.error(`[${parseErr.code}] Aucune réponse JSON exploitable trouvée dans le HAR.`);
       logger.warn(`[main] Causes possibles : (1) Leboncoin a bloqué la recherche (captcha/403) durant la capture HAR ; (2) structure du HAR différente de celle attendue ; (3) le fichier HAR est vide ou corrompu.`);
       logger.debug(`[main] Diagnostic : ${summarizeHarEntries(entries)}`);
+      // Exit code 2 : échec explicite « aucune donnée exploitable ». Distinct de
+      // 0 (succès) et 1 (erreur fatale) pour que PipelineRunner ne présente PAS
+      // un run vide comme un succès complet.
+      process.exitCode = 2;
       return;
     }
 
@@ -978,6 +986,7 @@ async function main() {
       logger.error(`[${emptyErr.code}] 0 annonce extraite de ce HAR.`);
       logger.warn(`[main] Récapitulatif diagnostic : ${entries.length} entrées HAR | ${jsonResponses.length} JSON parsés | ${rawAds.length} annonces brutes | ${normalized.length} après normalisation | 0 après déduplication.`);
       logger.warn(`[main] Causes probables : page de recherche non chargée, réponse réseau absente, données reçues mais ne contenant pas d'annonces, ou filtre ayant tout supprimé.`);
+      process.exitCode = 2;
       return;
     }
 

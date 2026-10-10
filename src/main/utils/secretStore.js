@@ -3,13 +3,19 @@
 /**
  * Stockage chiffré des secrets (clés API, tokens).
  *
- * Utilise Electron `safeStorage` qui s'appuie sur le trousseau de l'OS
- * (Keychain macOS, DPAPI Windows, libsecret/KWallet Linux). Les secrets sont
- * donc chiffrés au repos dans un fichier dédié (secrets.enc.json), et non
- * plus en clair dans le localStorage du renderer ou dans user-settings.json.
+ * Deux niveaux de protection, distincts et signalés :
+ *  1. safeStorage (préféré) : s'appuie sur le trousseau de l'OS (Keychain macOS,
+ *     DPAPI Windows, libsecret/KWallet Linux). Protection liée au compte
+ *     utilisateur du système → un autre compte ne peut pas déchiffrer.
+ *  2. Repli AES-256-GCM : utilisé UNIQUEMENT si le trousseau n'est pas disponible.
+ *     La clé est dérivée d'informations machine PUBLIQUES (nom d'utilisateur +
+ *     hostname). Ce n'est PAS équivalent au trousseau OS : quiconque accède au
+ *     fichier et connaît ces informations peut reconstruire la clé. Ce repli
+ *     évite seulement le clair sur disque ; il ne protège pas contre un accès
+ *     au système de fichiers. `isUsingOsKeychain()` permet à l'UI d'avertir.
  *
- * Si safeStorage n'est pas disponible (OS sans trousseau), on chiffre avec
- * une clé dérivée de l'identité machine (fallback AES-256-GCM).
+ * Les secrets sont stockés dans `secrets.enc.json` (jamais en clair, jamais
+ * dans user-settings.json ni le localStorage).
  */
 
 const fs = require('fs');
@@ -23,6 +29,7 @@ const FALLBACK_KEY_SALT = 'leboncoin-scraper-v1';
 
 let _secretsPath = null;
 let _cache = null;
+let _fallbackWarned = false;
 
 function _getSecretsPath() {
   if (_secretsPath) return _secretsPath;
@@ -54,7 +61,13 @@ function _encryptString(plain) {
   if (_isEncryptionAvailable()) {
     return { method: 'safeStorage', value: safeStorage.encryptString(plain).toString('base64') };
   }
-  // Fallback AES-256-GCM
+  // Fallback AES-256-GCM : protection RÉDUITE (clé dérivée d'infos machine
+  // publiques). On avertit une seule fois pour ne pas laisser croire à une
+  // protection équivalente au trousseau OS.
+  if (!_fallbackWarned) {
+    _fallbackWarned = true;
+    console.warn('[SecretStore] Trousseau OS indisponible — repli AES-256-GCM (clé dérivée d\'identifiants machine publics). Protection réduite : ne protège pas contre un accès au système de fichiers.');
+  }
   const key = _deriveFallbackKey();
   const iv = crypto.randomBytes(12);
   const cipher = crypto.createCipheriv(ALGO, key, iv);

@@ -158,7 +158,10 @@ function populateEtatFilter() {
   for (const j of allJobsCache) {
     if (!Array.isArray(j.ads)) continue;
     for (const a of j.ads) {
-      const e = a.produit?.etat;
+      // Le modèle expose l'état déclaré sur `etat` (structure plate v3).
+      // L'ancien accès `a.produit?.etat` renvoyait toujours undefined → le
+      // filtre « État » ne proposait jamais aucune valeur.
+      const e = a.etat;
       if (e) etats.add(e);
     }
   }
@@ -306,7 +309,7 @@ function renderExplorerAds() {
           <td class="text-center">${starIcon}</td>
           <td>${nameHtml}</td>
           <td><strong>${escapeHtml(String(priceText))}</strong></td>
-          <td>${sellerChip} ${typeVendeurBadge}${deliveryChip}${noteChip}${likesChip}</td>
+          <td class="cell-vendeur">${sellerChip} ${typeVendeurBadge}${deliveryChip}${noteChip}${likesChip}</td>
           <td>${escapeHtml(a.city || '-')}</td>
           <td>${escapeHtml(a.datePublication || a.date || '-')}</td>
           <td>

@@ -43,6 +43,12 @@ class HarCapturer extends EventEmitter {
     this.isCancelled = true;
   }
 
+  // UA figé pour toute la capture. Exposé pour que le pipeline d'enrichissement
+  // réutilise EXACTEMENT le même UA (cohérence d'empreinte cookies+UA → 403 évité).
+  getUserAgent() {
+    return this._userAgent;
+  }
+
   _launchOptions(headless) {
     const opts = { headless };
     if (this.proxyUrl) opts.proxy = { server: this.proxyUrl };

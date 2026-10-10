@@ -100,7 +100,7 @@ services/exporting/          exportFields.js (champs exportables + filtrage + TX
 services/analysis/adStats.js statistiques de prix brutes (sans scoring)
 services/jobs/jobHistory.js  listing/lecture/suppression jobs, buildAdHistory
 services/maintenance/storageCleaner
-infrastructure/              fileManager (ouverture fichiers/dossiers), notifications
+infrastructure/              fileManager (ouverture fichiers/dossiers)
 utils/                       helpers, diagnostics, integrity, rateLimiter, logger, secretStore, urlSecurity
 ```
 
@@ -141,7 +141,7 @@ styles.css                   habillage + 13 thèmes + stat-cards
   n'a pas accès à `app`.
 
 ## Tests
-- `node test/regression.test.js` → **777 assertions** (syntaxe + stubs Electron).
+- `node test/regression.test.js` → suite de non-régression (syntaxe + stubs Electron).
 - Le test stub `electron` : BrowserWindow a `webContents.send` mais PAS `isDestroyed`.
 - Avant tout commit : `node --check` sur les fichiers modifiés + lancer la suite.
 
@@ -162,7 +162,7 @@ styles.css                   habillage + 13 thèmes + stat-cards
 
 ## Commandes
 - Lancer l'app : `npm start` (electron --max-old-space-size=8192 .)
-- Tests : `npm test` (ou `node test/regression.test.js`) — 777 assertions
+- Tests : `npm test` (ou `node test/regression.test.js`)
 - Build .exe : `npm run dist` (electron-builder --win) → NSIS + portable dans `dist/`
 - Packaging local : `npm run pack` (electron-builder --dir)
 
@@ -184,8 +184,21 @@ Configuration dans `package.json` → clé `build` :
   ne doit JAMAIS être utilisé pour le polling de résolution — il reste figé à
   403 même après résolution. Utiliser `_checkCaptcha(page)` (content-based) +
   `latestHttpStatus` (response listener dynamique) + confirmation 2s anti-faux-positif.
-- **Pipeline exit code** : une erreur CLI doit faire `process.exit(1)` (pas 0).
-  Sinon le PipelineRunner voit code 0 et croit que le pipeline a réussi.
+- **Pipeline exit code** : une erreur CLI/init doit faire sortir le pipeline en
+  code `1` ; « aucune donnée exploitable » (HAR vide, 0 annonce) en code `2` ;
+  succès en code `0`. Sinon le PipelineRunner voit 0 et croit que le pipeline a
+  réussi, ou confond un run vide avec un crash.
+- **Annulation ≠ succès** : `activeCancel.cancelled` doit être LU après la
+  capture HAR. Si l'utilisateur a demandé l'arrêt, NE PAS lancer le pipeline
+  d'enrichissement et émettre `sendStatus({ state: 'cancelled' })` (état dédié,
+  distinct de `completed` et `error`). Le renderer traite `cancelled` comme
+  terminal. Sans cela, « Arrêter » affichait « terminé avec succès ».
+- **Clés d'export vs clés du modèle** : `filterAdByFields` traduit les clés
+  d'export (`ville`, `codePostal`, `vendeurNbAvis`, `vendeurAnciennete`) vers les
+  clés du modèle `normalizeAd` (`city`, `zipcode`, `nombreAvis`,
+  `vendeurAncienneteJours`) via `MODEL_KEY_FOR_EXPORT`. Ne PAS revenir à une
+  copie `out[key] = ad[key]` : ces champs disparaîtraient des exports Défaut et
+  Personnalisé.
 - **harCapturer warmup cancel** : si l'utilisateur annule pendant la résolution
   CAPTCHA (fenêtre visible), NE PAS persister `storageState` — la session est
   encore bloquée (cookies anti-bot). Fermer sans `storageState()`.
@@ -220,3 +233,12 @@ Configuration dans `package.json` → clé `build` :
 - `risk-keywords.js` (config/) — jamais importé dans l'app.
 - `resumes-ia.json` — résumés IA compacts supprimés (plus d'IA).
 - `export-meta.json` — métadonnées d'export XLSX/CSV supprimées.
+- `infrastructure/notifications.js` — module mort, jamais importé (retiré avec
+  l'import `Notifier` qu'il exposait).
+- Import `FIELD_CATEGORIES` dans `exporting/dataProfiles.js` — inutilisé.
+
+## Documents d'audit
+- `docs/AUDIT_REPORT.md` — périmètre, constats, corrections, limites.
+- `docs/STABILITY_PLAN.md` — lots, critères de validation, reste à faire.
+- `docs/CHANGELOG.md` — journal des changements significatifs.
+- `docs/KNOWN_ISSUES.md` — problèmes non résolus (build Windows, tests UI, etc.).

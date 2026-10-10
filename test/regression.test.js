@@ -70,7 +70,6 @@ console.log('\n[2] Modules principaux');
 const { AdStats } = require('../src/main/services/analysis/adStats');
 const { StorageCleaner } = require('../src/main/services/maintenance/storageCleaner');
 const { FileManager } = require('../src/main/infrastructure/fileManager');
-const { Notifier } = require('../src/main/infrastructure/notifications');
 const { loadSettings, saveSettings } = require('../src/main/core/settings');
 
 assert(typeof AdStats.analyze === 'function', 'AdStats.analyze (remplace DealFinder)');
@@ -107,6 +106,11 @@ assert(AdStats.analyze([{ id: '1', price: 0 }, { id: '2', price: -5 }]).stats ==
 const mixedPrices = AdStats.analyze([{ id: '1', price: 100 }, { id: '2', prix: '200' }, { id: '3', price: null }]);
 assert(mixedPrices.stats.pricedAds === 2, 'AdStats: prix string parsés, null ignorés (pricedAds=2)');
 assert(mixedPrices.stats.minPrice === 100 && mixedPrices.stats.maxPrice === 200, 'AdStats: min/max après tri des prix valides');
+// Médiane : nombre pair → moyenne des deux valeurs centrales (pas l'élément du milieu)
+assert(AdStats.analyze([{ id: '1', prix: 100 }, { id: '2', prix: 200 }, { id: '3', prix: 300 }, { id: '4', prix: 400 }]).stats.medianPrice === 250,
+  'AdStats: medianPrice paire = moyenne des deux valeurs centrales (250)');
+assert(AdStats.analyze([{ id: '1', prix: 100 }, { id: '2', prix: 200 }, { id: '3', prix: 350 }]).stats.medianPrice === 200,
+  'AdStats: medianPrice impaire = valeur centrale (200)');
 // AdStats : deliveryType (modèle unifié)
 const txStats = AdStats.analyze([
   { id: '1', prix: 100, livraison: true, mainPropre: false, deliveryType: 'livraison' },
@@ -183,6 +187,58 @@ await new Promise((resolve) => {
   });
 });
 
+// --- 3b. Pipeline : exit code 2 quand aucune donnée exploitable (non-régression) ---
+// Avant, un HAR sans annonce faisait `return` → exit 0, et PipelineRunner croyait
+// que le pipeline avait réussi. On vérifie le nouveau contrat : exit 2.
+console.log('\n[3b] Pipeline exit-code 2 (aucune donnée exploitable)');
+const emptyOut = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-empty-'));
+fs.writeFileSync(path.join(emptyOut, 'capture.har'), JSON.stringify({ log: { entries: [] } }));
+await new Promise((resolve) => {
+  const child = fork(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), [path.join(emptyOut, 'capture.har'), '--out', emptyOut, '--headless', '--no-desc'], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  child.on('close', (code) => {
+    assert(code === 2, 'pipeline: HAR sans données → exit code 2 (pas 0)');
+    fs.rmSync(emptyOut, { recursive: true, force: true });
+    resolve();
+  });
+});
+
+// --- 3b2. Annulation : état « cancelled » distinct d'un succès (non-régression) ---
+// Avant, un clic « Arrêter » faisait sortir le pipeline avec un code non nul
+// mais la branche de succès du job renvoyait « Scraping terminé avec succès ! ».
+// On vérifie que le main process remonte un état « cancelled » dédié et que le
+// renderer le traite comme un état terminal (réactivation des boutons).
+console.log('\n[3b2] Annulation : état cancelled');
+{
+  const ipcCodeCancel = fs.readFileSync(path.join(__dirname, '..', 'src/main/core/ipcHandlers.js'), 'utf8');
+  assert(/_cancelled/.test(ipcCodeCancel), 'ipcHandlers: marqueur _cancelled posé sur l\'erreur d\'annulation');
+  assert(/state:\s*'cancelled'/.test(ipcCodeCancel), 'ipcHandlers: sendStatus state=cancelled sur annulation');
+  assert(/activeCancel\s*&&\s*activeCancel\.cancelled/.test(ipcCodeCancel), 'ipcHandlers: ne lance pas le pipeline si annulé après capture');
+  const scraperCancel = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/scraperModule.js'), 'utf8');
+  assert(/state === 'completed' \|\| state === 'error' \|\| state === 'cancelled'/.test(scraperCancel),
+    'scraperModule: état cancelled traité comme terminal (boutons réactivés)');
+}
+
+
+// --- 3c. Pipeline : export profil Défaut inclut ville/codePostal (non-régression) ---
+// Vérifie de bout en bout (fork réel) que le correctif de compatibilité des clés
+// d'export s'applique bien aux fichiers JSON produits par le pipeline.
+console.log('\n[3c] Pipeline export profil Défaut (ville/codePostal)');
+const defOut = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-def-'));
+fs.writeFileSync(path.join(defOut, 'capture.har'), JSON.stringify(har));
+await new Promise((resolve) => {
+  const child = fork(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), [path.join(defOut, 'capture.har'), '--out', defOut, '--headless', '--no-desc', '--profile-id', 'default'], { stdio: ['pipe', 'pipe', 'pipe', 'ipc'] });
+  child.on('close', (code) => {
+    assert(code === 0, 'pipeline profil Défaut: exit 0');
+    const ads = JSON.parse(fs.readFileSync(path.join(defOut, 'annonces.json'), 'utf8'));
+    assert(ads[0].ville === 'Lyon', 'pipeline JSON profil Défaut: ville présent (clé d\'export)');
+    assert(ads[0].codePostal === '69000', 'pipeline JSON profil Défaut: codePostal présent (clé d\'export)');
+    const txt = fs.readFileSync(path.join(defOut, 'annonces.txt'), 'utf8');
+    assert(txt.includes('Lyon'), 'pipeline TXT profil Défaut: ville affichée');
+    fs.rmSync(defOut, { recursive: true, force: true });
+    resolve();
+  });
+});
+
 // --- 4. Corrections renderer + main ---
 console.log('\n[4] Corrections renderer + main');
 const rendererDir = path.join(__dirname, '..', 'src/renderer');
@@ -247,16 +303,15 @@ assert(existsSync(path.join(base, 'services/analysis/adStats.js')), 'services/an
 assert(existsSync(path.join(base, 'services/jobs/jobHistory.js')), 'services/jobs/jobHistory.js present');
 assert(existsSync(path.join(base, 'services/maintenance/storageCleaner.js')), 'services/maintenance/storageCleaner.js present');
 assert(existsSync(path.join(base, 'infrastructure/fileManager.js')), 'infrastructure/fileManager.js present');
-assert(existsSync(path.join(base, 'infrastructure/notifications.js')), 'infrastructure/notifications.js (extrait) present');
 
 // Anciens dossiers supprimés
 assert(!existsSync(path.join(base, 'modules')), 'old modules/ folder removed');
 assert(!existsSync(path.join(base, 'vendor')), 'old vendor/ folder removed');
 assert(!existsSync(path.join(base, 'ipcHandlers.js')), 'ipcHandlers.js moved out of main/ root');
 
-// Notifier : responsable de la notification OS
-assert(typeof Notifier.notifyGoodDeal === 'function', 'Notifier.notifyGoodDeal present');
-assert(typeof Notifier.isSupported === 'function', 'Notifier.isSupported present');
+// notifications.js supprimé : il ne servait qu'au handler IA Marché (market:analyze),
+// lui-même retiré. Le module était importé par ipcHandlers mais jamais utilisé.
+assert(!existsSync(path.join(base, 'infrastructure/notifications.js')), 'infrastructure/notifications.js supprimé (IA Marché retirée)');
 
 // Settings extrait d'ipcHandlers
 assert(typeof loadSettings === 'function', 'loadSettings extracted to core/settings');
@@ -269,7 +324,7 @@ assert(!/RISK_KEYWORDS/.test(fs.readFileSync(path.join(base, 'config/constants.j
 assert(!/function loadSettings\b/.test(ipcCode), 'ipcHandlers no longer defines loadSettings inline');
 assert(!/function saveSettings\b/.test(ipcCode), 'ipcHandlers no longer defines saveSettings inline');
 assert(/require\(.\.\/settings.\)/.test(ipcCode), 'ipcHandlers imports settings from ./settings');
-assert(/Notifier/.test(ipcCode), 'ipcHandlers: importe Notifier (notifications OS)');
+assert(!/Notifier/.test(ipcCode), 'ipcHandlers: import Notifier retiré (module mort)');
 
 // main.js pointe vers core/ipcHandlers
 const mainCode = fs.readFileSync(path.join(base, 'main.js'), 'utf8');
@@ -1167,6 +1222,28 @@ const urlSecCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/utils/ur
 assert(/validateRemoteUrl/.test(urlSecCode), 'urlSecurity: validateRemoteUrl présente');
 assert(/127\.0\.0\.0|10\.0\.0\.0|172\.16\.0\.0|192\.168\.0\.0/.test(urlSecCode), 'urlSecurity: plages IP privées bloquées');
 
+// urlSecurity : comportement réel (IPv4 privées, IPv6 ULA/link-local, IPv4-mappées)
+(function () {
+  const { isPrivateIPv4, isPrivateIPv6, isBlockedIpLiteral } = require('../src/main/utils/urlSecurity');
+  assert(isPrivateIPv4('127.0.0.1') === true, 'urlSecurity: 127.0.0.1 privée');
+  assert(isPrivateIPv4('10.0.0.5') === true, 'urlSecurity: 10.0.0.0/8 privée');
+  assert(isPrivateIPv4('172.16.0.1') === true, 'urlSecurity: 172.16/12 privée');
+  assert(isPrivateIPv4('192.168.1.1') === true, 'urlSecurity: 192.168/16 privée');
+  assert(isPrivateIPv4('169.254.1.1') === true, 'urlSecurity: 169.254/16 link-local');
+  assert(isPrivateIPv4('100.64.0.1') === true, 'urlSecurity: 100.64/10 CGNAT');
+  assert(isPrivateIPv4('8.8.8.8') === false, 'urlSecurity: 8.8.8.8 publique (autorisée)');
+  assert(isPrivateIPv4('1.1.1.1') === false, 'urlSecurity: 1.1.1.1 publique');
+  assert(isPrivateIPv6('::1') === true, 'urlSecurity: ::1 loopback IPv6');
+  assert(isPrivateIPv6('fc00::1') === true, 'urlSecurity: fc00::/7 ULA');
+  assert(isPrivateIPv6('fd12::1') === true, 'urlSecurity: fd…/8 ULA');
+  assert(isPrivateIPv6('fe80::1') === true, 'urlSecurity: fe80::/10 link-local');
+  assert(isPrivateIPv6('::ffff:127.0.0.1') === true, 'urlSecurity: IPv4-mappée 127.0.0.1 bloquée');
+  assert(isPrivateIPv6('::ffff:8.8.8.8') === false, 'urlSecurity: IPv4-mappée publique autorisée');
+  assert(isPrivateIPv6('2001:4860:4860::8888') === false, 'urlSecurity: IPv6 publique autorisée');
+  assert(isBlockedIpLiteral('10.0.0.1') === true, 'urlSecurity: isBlockedIpLiteral IPv4 privée');
+  assert(isBlockedIpLiteral('2001:4860:4860::8888') === false, 'urlSecurity: isBlockedIpLiteral IPv6 publique');
+})();
+
 // Data nullability : livraison/mainPropre/type ne sont plus inventés
 const adFieldsCodeFinal = fs.readFileSync(path.join(base, 'services/scraping/adFields.js'), 'utf8');
 assert(!/Array\.isArray\(raw\?\.attributes\) && raw\.attributes\.length > 0/.test(adFieldsCodeFinal), 'adFields: plus de fallback livraison=false sur attributes');
@@ -1599,6 +1676,49 @@ console.log('\n[18c] computeDeliveryType (non-régression)');
   assert(computeDeliveryType(false, null) === 'aucun', 'computeDeliveryType: false,null → aucun');
   assert(computeDeliveryType(null, false) === 'aucun', 'computeDeliveryType: null,false → aucun');
   assert(computeDeliveryType(null, null) === 'inconnu', 'computeDeliveryType: null,null → inconnu');
+})();
+
+// --- 18d. Export : compatibilité des clés d'export avec le modèle normalizeAd ---
+// Non-régression du bug : les clés d'export `ville`/`codePostal`/`vendeurNbAvis`/
+// `vendeurAnciennete` étaient silencieusement supprimées des exports JSON car le
+// modèle expose `city`/`zipcode`/`nombreAvis`/`vendeurAncienneteJours`.
+console.log('\n[18d] Export field-key compatibility (non-régression)');
+(function () {
+  const { filterAdByFields, toReadableBlock } = require('../src/main/services/exporting/exportFields');
+  const { getProfileFields } = require('../src/main/services/exporting/dataProfiles');
+
+  // Annonce au format RÉEL produit par normalizeAd() (city/zipcode/nombreAvis…).
+  const modelAd = {
+    id: '42', title: 'GPU', url: 'https://www.leboncoin.fr/ad/42.htm', prix: 250,
+    city: 'Lyon', zipcode: '69001',
+    vendeurNom: 'Jean', vendeurType: 'particulier', nombreAvis: 12, vendeurAncienneteJours: 400,
+    deliveryType: 'livraison',
+    datePublication: '2026-01-01T10:00:00.000Z', dateScraping: '2026-01-02T10:00:00.000Z',
+    photosCount: 2, photosUrls: ['a.jpg', 'b.jpg'], description: 'bon état', likes: 5,
+  };
+
+  const json = filterAdByFields(modelAd, getProfileFields('default'));
+  assert(json.ville === 'Lyon', 'export JSON: ville présent depuis city (modèle réel)');
+  assert(json.codePostal === '69001', 'export JSON: codePostal présent depuis zipcode (modèle réel)');
+  assert(json.dateScraping === '2026-01-02T10:00:00.000Z', 'export JSON: date ISO brute préservée (non formatée)');
+  assert(Array.isArray(json.photosUrls) === false, 'export JSON: photosUrls formaté/brut selon get (pas de crash)');
+
+  const maxJson = filterAdByFields(modelAd, getProfileFields('maximum'));
+  // Profil Maximum = dump brut du modèle (clés city/zipcode/nombreAvis/
+  // vendeurAncienneteJours). Les profils Défaut/Personnalisé utilisent les clés
+  // d'export (ville/codePostal/vendeurNbAvis/vendeurAnciennete).
+  assert(maxJson.nombreAvis === 12, 'export JSON: profil Maximum conserve le modèle brut (nombreAvis)');
+  assert(maxJson.vendeurAncienneteJours === 400, 'export JSON: profil Maximum conserve le modèle brut (vendeurAncienneteJours)');
+
+  const txt = toReadableBlock(modelAd, 0, getProfileFields('default'));
+  assert(txt.includes('Lyon'), 'export TXT: ville affichée');
+  assert(txt.includes('69001'), 'export TXT: code postal affiché');
+
+  // Rétro-compat : une annonce « métier » (ville/codePostal) reste lisible.
+  const legacyAd = { id: '1', title: 'T', prix: 10, ville: 'Paris', codePostal: '75001' };
+  const legacyJson = filterAdByFields(legacyAd, getProfileFields('default'));
+  assert(legacyJson.ville === 'Paris', 'export JSON: rétro-compat clé ville directe');
+  assert(legacyJson.codePostal === '75001', 'export JSON: rétro-compat clé codePostal directe');
 })();
 
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);

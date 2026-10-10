@@ -25,7 +25,7 @@ Application de bureau **Electron** pour scraper, explorer et analyser des annonc
 
 ## 🎯 Présentation
 
-**Leboncoin Scraper Pro** est une application desktop (Windows/Mac/Linux) construite avec **Electron** qui :
+**Leboncoin Scraper Pro** est une application desktop construite avec **Electron** (code multiplateforme) qui :
 
 1. **Capture** les résultats d'une recherche Leboncoin (Chromium piloté par Playwright).
 2. **Extrait** les annonces à partir du trafic réseau capturé (fichier `.har`).
@@ -133,7 +133,7 @@ npm start
 | Script | Commande | Rôle |
 |---|---|---|
 | `npm start` | `electron --max-old-space-size=8192 .` | Lance l'app en développement |
-| `npm test` | `node test/regression.test.js` | Suite de non-régression (777 assertions) |
+| `npm test` | `node test/regression.test.js` | Suite de non-régression (suite de non-régression) |
 | `npm run pack` | `electron-builder --dir` | Packaging local (non distribuable) |
 | `npm run dist` | `electron-builder --win` | Génère le `.exe` d'installation Windows |
 | `npm run build` | `electron-builder --win` | Alias de `dist` |
@@ -220,7 +220,7 @@ Architecture standard **Electron** (main + renderer) avec un **sous-processus** 
 leboncoin-scraper-app/
 ├── package.json                          # Métadonnées, dépendances, scripts
 ├── test/
-│   └── regression.test.js                # Suite de non-régression (777 assertions)
+│   └── regression.test.js                # Suite de non-régression (suite de non-régression)
 └── src/
     ├── main/                             # Processus principal Electron
     │   ├── main.js                       # Cycle de vie + fenêtres + single-instance lock
@@ -249,8 +249,7 @@ leboncoin-scraper-app/
     │   │   └── maintenance/
     │   │       └── storageCleaner.js     # Nettoyage .har + jobs (âge = timestamp dossier)
     │   ├── infrastructure/
-    │   │   ├── fileManager.js            # Ouverture fichiers/dossiers (explorateur)
-    │   │   └── notifications.js          # Notifications système
+    │   │   └── fileManager.js            # Ouverture fichiers/dossiers (explorateur)
     │   └── utils/
     │       ├── helpers.js                # sleep, atomicWriteFileSync, cleanText...
     │       ├── diagnostics.js            # redact, formatBytes, summarizeAds, describeError
@@ -365,7 +364,7 @@ npm run pack
 
 ## 🧪 Tests
 
-`test/regression.test.js` — script Node.js autonome (sans framework externe), **777 assertions** couvrant :
+`test/regression.test.js` — script Node.js autonome (sans framework externe), **suite complète** couvrant :
 
 1. **utils** — diagnostics, helpers, integrity (checksum), rateLimiter, logger, secretStore, urlSecurity.
 2. **Modules principaux** — AdStats, StorageCleaner, settings, exportFields, dataProfiles.
@@ -383,7 +382,7 @@ npm run pack
 npm test
 ```
 
-Résultat attendu : `=== RÉSULTAT : 777 réussis, 0 échoués ===`
+Résultat attendu : `=== RÉSULTAT : <N> réussis, 0 échoués ===`
 
 > Le test installe des **stubs** pour `electron` et `playwright` afin de `require()` les modules en Node pur, sans lancer Electron/Chromium.
 

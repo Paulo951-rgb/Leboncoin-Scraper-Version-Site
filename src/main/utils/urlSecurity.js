@@ -38,6 +38,45 @@ function isPrivateIPv4(ip) {
   return false;
 }
 
+// Normalise une IPv6 en supprimant les zéros de tête par groupe pour comparer
+// les préfixes privés (fc00::/7, fe80::/10) de façon robuste.
+function _normalizeIPv6(ip) {
+  try {
+    // net.isIP(ip) === 6 ; on ne gère pas les zones (fe80::1%eth0) ici.
+    return ip.toLowerCase().split('%')[0];
+  } catch {
+    return ip;
+  }
+}
+
+// Détecte les IPv6 privées/loopback/link-local/ULA, y compris les adresses
+// IPv4-mappées (::ffff:127.0.0.1) qui contourneraient sinon le contrôle IPv4.
+function isPrivateIPv6(ip) {
+  const norm = _normalizeIPv6(ip);
+  if (norm === '::1') return true;
+  if (norm === '::') return true;
+  // IPv4-mappée ::ffff:a.b.c.d → on vérifie la partie IPv4.
+  const mapped = norm.match(/^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/);
+  if (mapped) return isPrivateIPv4(mapped[1]);
+  // fc00::/7 (ULA) : 2 premiers bits du 1er octet = 1111 110.
+  // fe80::/10 (link-local).
+  const firstGroup = norm.split(':')[0];
+  if (!firstGroup) return true; // « ::… » compressé → couvert par loopback/unspecified
+  const first = parseInt(firstGroup, 16);
+  if (!Number.isFinite(first)) return false;
+  if ((first & 0xfe00) === 0xfc00) return true; // fc00::/7
+  if ((first & 0xffc0) === 0xfe80) return true; // fe80::/10
+  return false;
+}
+
+// Vérifie si une chaîne littérale est une IP privée/interdite (v4 ou v6).
+function isBlockedIpLiteral(ip) {
+  const v = net.isIP(ip);
+  if (v === 4) return isPrivateIPv4(ip);
+  if (v === 6) return isPrivateIPv6(ip);
+  return false;
+}
+
 async function resolveHostnameToIps(hostname) {
   const ips = [];
   try {
@@ -86,17 +125,19 @@ async function validateRemoteUrl(url, opts = {}) {
 
   // Si une IP est fournie directement, vérifie les plages privées.
   if (net.isIP(hostname)) {
-    if (isPrivateIPv4(hostname)) {
+    if (isBlockedIpLiteral(hostname)) {
       return { safe: false, reason: `IP privée/interdite: ${hostname}` };
-    }
-    if (net.isIP(hostname) === 6 && hostname === '::1') {
-      return { safe: false, reason: 'IPv6 loopback interdite' };
     }
   } else {
     // Résolution DNS pour vérifier les IPs associées.
+    // LIMITE CONNUE : si la résolution échoue (DNS vide/erreur), on ne peut pas
+    // vérifier les IPs → on laisse passer ici. Cette fonction n'est PAS utilisée
+    // pour sécuriser le chemin Playwright (voir ALLOWED_FETCH_HOSTS dans le
+    // pipeline). Toute future utilisation pour un fetch réseau doit refuser en
+    // l'absence de résolution (fail-closed) plutôt que de continuer.
     const ips = await resolveHostnameToIps(hostname);
     for (const ip of ips) {
-      if (isPrivateIPv4(ip)) {
+      if (isBlockedIpLiteral(ip)) {
         return { safe: false, reason: `Résolution DNS vers IP privée: ${hostname} -> ${ip}` };
       }
     }
@@ -131,4 +172,4 @@ async function validateRemoteUrl(url, opts = {}) {
   return { safe: true };
 }
 
-module.exports = { validateRemoteUrl, isPrivateIPv4, resolveHostnameToIps, PRIVATE_RANGES };
+module.exports = { validateRemoteUrl, isPrivateIPv4, isPrivateIPv6, isBlockedIpLiteral, resolveHostnameToIps, PRIVATE_RANGES };

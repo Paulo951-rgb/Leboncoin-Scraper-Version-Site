@@ -86,7 +86,7 @@ modalConfirmBtn.addEventListener('click', async () => {
   }
 });
 
-document.getElementById('openMainFolderBtn').addEventListener('click', async () => {
+openMainFolderBtn.addEventListener('click', async () => {
   try {
     // Ouvrir le dossier results/ (JOBS_DIR) qui contient les résultats du scraping
     const res = await window.api.openJobsFolder();
