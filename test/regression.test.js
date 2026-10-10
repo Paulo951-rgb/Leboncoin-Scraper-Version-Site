@@ -1980,6 +1980,33 @@ console.log('\n[20] Bugs Phase 3 (audit global)');
   console.log('\n[20] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [21] NON-RÉGRESSION — Phase 3 lot 2 (UI, robustesse, paramètres)
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[21] Phase 3 lot 2 (UI/robustesse)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const read = (rel) => fs.readFileSync(path.join(repoRoot, rel), 'utf8');
+
+  // [21a] Dropdown session ne doit pas restaurer une valeur inexistante (job supprimé).
+  const expCode = read('src/renderer/explorerModule.js');
+  assert(/stillExists\s*=\s*selectedVal[\s\S]*?some\(/.test(expCode), 'explorer: populateSessionDropdown vérifie l\'existence de la valeur (pas de vue vide après suppression)');
+
+  // [21b] maxPages borné (parseInt('')/0 ne doit pas désactiver la limite de pagination).
+  const ipcCode = read('src/main/core/ipcHandlers.js');
+  assert(/Math\.min\(500,\s*Math\.max\(1,\s*parseInt\(pages/.test(ipcCode), 'ipcHandlers: maxPages clampé [1,500] (évite pagination illimitée)');
+
+  // [21c] scraperModule réarme le bandeau structureWarning au démarrage d'un run.
+  const scraperCode = read('src/renderer/scraperModule.js');
+  assert(/structureWarning[\s\S]*?classList\.add\('hidden'\)/.test(scraperCode), 'scraper: structureWarning masqué au démarrage d\'un run');
+
+  // [21d] renderCharts détruit les instances sur session vide (pas de graphiques fantômes).
+  const statsCode = read('src/renderer/statsModule.js');
+  assert(/ads\.length === 0\)\s*\{[\s\S]*?\.destroy\(\)/.test(statsCode), 'stats: renderCharts détruit les instances quand aucune donnée');
+
+  console.log('\n[21] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

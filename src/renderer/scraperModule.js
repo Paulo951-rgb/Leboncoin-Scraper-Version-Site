@@ -445,6 +445,12 @@ startBtn.addEventListener('click', () => {
   progressBar.style.width = '0%';
   statusText.textContent = 'Statut : Lancement...';
 
+  // Réarme le bandeau d'alerte structure : sans cela, un avertissement de
+  // structure affiché lors d'un run précédent restait visible indéfiniment
+  // (aucun code ne le masquait) et donnait une fausse alerte sur les runs OK.
+  const structureWarningEl = document.getElementById('structureWarning');
+  if (structureWarningEl) structureWarningEl.classList.add('hidden');
+
   window.api.startScraping(config);
 });
 

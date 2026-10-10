@@ -181,7 +181,11 @@ function setupIpcHandlers(getMainWindow) {
 
       await activeCapturer.capture({
         searchUrl,
-        maxPages: parseInt(pages, 10),
+        // parseInt('')===NaN et parseInt('0')===0 : les deux produisaient
+        // maxPages 0/NaN côté harCapturer, interprété comme « pas de limite »
+        // (risque d'aspirer des centaines de pages). On normalise en entier
+        // borné [1, 500] avant transmission.
+        maxPages: Math.min(500, Math.max(1, parseInt(pages, 10) || 1)),
         outputHarPath: harPath,
       });
       const harElapsed = Date.now() - t0Total;

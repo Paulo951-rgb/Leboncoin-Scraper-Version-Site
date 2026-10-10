@@ -94,7 +94,13 @@ function populateSessionDropdown(selectEl) {
     selectEl.appendChild(opt);
   });
 
-  if (selectedVal) selectEl.value = selectedVal;
+  // Restaure la sélection précédente UNIQUEMENT si le job existe encore. Sinon
+  // (job supprimé entre-temps), affecter une valeur absente laisse le <select>
+  // sans sélection (value = '') → l'explorateur/les stats affichaient une vue
+  // vide jusqu'à ce que l'utilisateur resélectionne manuellement. On retombe
+  // sur 'ALL' dans ce cas.
+  const stillExists = selectedVal && [...selectEl.options].some((o) => o.value === selectedVal);
+  selectEl.value = stillExists ? selectedVal : 'ALL';
 }
 
 // Écouteurs de filtrage sécurisés (Évitent tout plantage en cas d'élément absent)
