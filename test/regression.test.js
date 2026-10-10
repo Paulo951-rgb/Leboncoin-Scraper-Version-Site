@@ -2309,6 +2309,9 @@ console.log('\n[28] Distribution Windows (packaging)');
   // Les fichiers de l'app incluent src + playwright
   const files = build.files || [];
   assert(files.some((f) => f.startsWith('src/')), 'dist: files inclut src/**');
+  // Chromium fourni uniquement via extraResources → pas de duplication dans app.asar
+  assert(files.some((f) => f.startsWith('!node_modules/playwright-core/.local-browsers')),
+    'dist: .local-browsers exclu de files (pas de duplication Chromium)');
 
   // Scripts npm cohérents
   const scripts = pkg.scripts || {};

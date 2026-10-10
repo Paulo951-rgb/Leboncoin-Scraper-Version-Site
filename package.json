@@ -37,7 +37,8 @@
       "src/**/*",
       "package.json",
       "node_modules/playwright/**/*",
-      "node_modules/playwright-core/**/*"
+      "node_modules/playwright-core/**/*",
+      "!node_modules/playwright-core/.local-browsers/**/*"
     ],
     "extraResources": [
       {
