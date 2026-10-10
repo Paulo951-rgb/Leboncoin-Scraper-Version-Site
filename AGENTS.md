@@ -50,7 +50,10 @@ Les deux booléens internes (`livraison`, `mainPropre`) sont toujours extraits s
 
 - `NET_*` — erreurs réseau (timeout, DNS, connexion)
 - `HTTP_*` — erreurs HTTP (403, 429, 404, 500, inconnu)
-- `CAPTCHA_*` — captcha (détecté, timeout, non résolu)
+- `HTTP_ACCESS_REFUSED` — HTTP 403 : accès refusé par le serveur
+- `HTTP_RATE_LIMITED` — HTTP 429 : limitation de débit (Retry-After respecté)
+- `ACCESS_UNVERIFIED` — session non validée (accès impossible à confirmer)
+- `CAPTCHA_*` — captcha (détecté, timeout, non résolu, non confirmé)
 - `PARSE_*` — parsing (HAR invalide, JSON invalide, aucune annonce)
 - `EXTRACTOR_*` — extracteurs (vendeur, prix, description, localisation, dates, photos)
 - `SESSION_*` — session (expirée, invalide)
@@ -61,6 +64,22 @@ Les deux booléens internes (`livraison`, `mainPropre`) sont toujours extraits s
 `createError(code, message, context)` crée un objet d'erreur structuré `{ code, message, context, timestamp }`.
 
 `classifyError(code)` catégorise l'erreur pour déterminer l'action : `recoverable`, `ad_error`, `network_error`, `session_error`, `global_error`, `unknown`.
+
+## Vérification d'accès (anti-fausse-réussite)
+
+`_verifyAccess(page, url)` (harCapturer) confirme l'accès APRÈS résolution d'un
+CAPTCHA. Elle effectue une requête document autorisée (HEAD puis GET) et juge sur
+le **statut HTTP réel** + la validité du contenu — JAMAIS sur la seule disparition
+visuelle du défi. HTTP 403 → `HTTP_403`, HTTP 429 → `HTTP_429` (avec Retry-After),
+contenu bloqué en 200 → non confirmé, aucune réponse → `ACCESS_UNVERIFIED`.
+
+États de statut envoyés au renderer : `capturing`, `processing`, `completed`,
+`partial` (succès partiel : enrichissement bloqué 403/429 ou interruption),
+`cancelled`, `error`, `refused` (403), `rate_limited` (429).
+
+Codes de sortie du pipeline (contrat avec `pipelineRunner.js`) : `0` succès,
+`1` erreur fatale, `2` aucune donnée exploitable, `3` enrichissement arrêté sur
+HTTP 403, `4` enrichissement arrêté sur HTTP 429.
 
 ## Champs d'annonce (schéma scraping pur)
 
@@ -259,6 +278,18 @@ Sans Wine, `-c.win.signAndEditExecutable=false` permet de produire `dist/win-unp
   ne doit JAMAIS être utilisé pour le polling de résolution — il reste figé à
   403 même après résolution. Utiliser `_checkCaptcha(page)` (content-based) +
   `latestHttpStatus` (response listener dynamique) + confirmation 2s anti-faux-positif.
+- **Fausse validation d'accès (CAPTCHA)** : la disparition visuelle du défi
+  (iframe/texte/URL) NE prouve PAS l'autorisation. `_warmupSession` DOIT appeler
+  `_verifyAccess()` (statut HTTP réel) avant de persister la session et de
+  reprendre. Ne JAMAIS déclarer « CAPTCHA résolu » puis lancer la capture si le
+  serveur répond encore 403/429. En cas d'échec : arrêt propre, pas de boucle.
+- **Boucle de fenêtres CAPTCHA** : la capture ne relance la reprise QUE si
+  `_warmupSession` renvoie `verified === true`. Sinon elle `break` (arrêt) — ne
+  jamais ré-ouvrir une fenêtre en boucle pour chaque page bloquée.
+- **Succès partiel vs succès** : si l'enrichissement est bloqué (403/429) ou si
+  des pages sont perdues, `ipcHandlers` DOIT émettre `state: 'partial'` (jamais
+  `completed`) et préserver `annonces.json`. Exit codes pipeline `3` (403) / `4`
+  (429). Le message de succès n'est affiché QUE si tout est réellement réussi.
 - **Pipeline exit code** : une erreur CLI/init doit faire sortir le pipeline en
   code `1` ; « aucune donnée exploitable » (HAR vide, 0 annonce) en code `2` ;
   succès en code `0`. Sinon le PipelineRunner voit 0 et croit que le pipeline a

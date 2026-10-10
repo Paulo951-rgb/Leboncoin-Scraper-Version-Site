@@ -75,6 +75,9 @@ function setupIpcHandlers(getMainWindow) {
       descriptionsExtracted: 0, descriptionsBlocked: 0,
       errors: 0, warnings: 0, debugs: 0,
       stoppedEarly: false,
+      // Blocage d'accès détecté pendant l'enrichissement (403/429) : permet de
+      // rapporter un « succès partiel » honnête plutôt qu'un succès complet.
+      accessBlocked: false, accessCode: null,
     };
   }
   let sessionStats = newSessionStats();
@@ -179,12 +182,8 @@ function setupIpcHandlers(getMainWindow) {
       // (enrichissement) et garder une empreinte cohérente (mêmes cookies + UA).
       const captureUserAgent = activeCapturer.getUserAgent();
 
-      await activeCapturer.capture({
+      const captureResult = await activeCapturer.capture({
         searchUrl,
-        // parseInt('')===NaN et parseInt('0')===0 : les deux produisaient
-        // maxPages 0/NaN côté harCapturer, interprété comme « pas de limite »
-        // (risque d'aspirer des centaines de pages). On normalise en entier
-        // borné [1, 500] avant transmission.
         maxPages: Math.min(500, Math.max(1, parseInt(pages, 10) || 1)),
         outputHarPath: harPath,
       });
@@ -193,12 +192,37 @@ function setupIpcHandlers(getMainWindow) {
 
       activeCapturer = null;
 
-      // Si l'utilisateur a demandé l'arrêt pendant la capture HAR, on NE lance
-      // PAS le pipeline d'enrichissement (coûteux) et on remonte un état
-      // « annulé » distinct — sinon un clic « Arrêter » aboutissait à un
-      // message « Scraping terminé avec succès ! » trompeur.
+      // If the user requested stop during HAR capture ...
       if (activeCancel && activeCancel.cancelled) {
         throw Object.assign(new Error('Scraping annulé par l\'utilisateur.'), { _cancelled: true });
+      }
+
+      // ACCÈS NON CONFIRMÉ : le pré-check/vérification n'a pas pu prouver l'accès
+      // (HTTP 403/429 ou session non validée). On NE lance PAS le pipeline : le
+      // HAR n'a rien d'exploitable et le présenter comme un succès serait faux.
+      if (captureResult && captureResult.blocked) {
+        const code = captureResult.blockedCode || 'ACCESS_UNVERIFIED';
+        const http = captureResult.httpStatus != null ? ` (HTTP ${captureResult.httpStatus})` : '';
+        const isRefused = code === 'HTTP_403' || code === 'HTTP_ACCESS_REFUSED';
+        const isRateLimited = code === 'HTTP_429' || code === 'HTTP_RATE_LIMITED';
+        if (isRefused) {
+          sendLog({ level: 'error', message: `⛔ [HTTP_ACCESS_REFUSED] Accès refusé par le serveur${http}. Aucune donnée récupérée.` });
+        } else if (isRateLimited) {
+          const wait = captureResult.retryAfterMs ? ` (Retry-After ~${Math.round(captureResult.retryAfterMs / 1000)}s)` : '';
+          sendLog({ level: 'error', message: `⏳ [HTTP_RATE_LIMITED] Requête limitée${http}${wait}. Reprise non autorisée pour l'instant.` });
+        } else {
+          sendLog({ level: 'error', message: `[ACCESS_UNVERIFIED] Session non validée${http}. Opération interrompue — aucune donnée exploitable récupérée.` });
+        }
+        sendSessionSummary();
+        sendStatus({
+          state: isRateLimited ? 'rate_limited' : isRefused ? 'refused' : 'error',
+          message: isRateLimited
+            ? 'Requête limitée (HTTP 429). Aucune donnée récupérée.'
+            : isRefused
+              ? 'Accès refusé par le serveur (HTTP 403). Aucune donnée récupérée.'
+              : 'Session non validée. Opération interrompue ; aucune donnée exploitable récupérée.',
+        });
+        return;
       }
 
       sendStatus({ state: 'processing', message: 'Extraction et enrichissement des annonces...' });
@@ -230,6 +254,13 @@ function setupIpcHandlers(getMainWindow) {
         if (descMatch) sessionStats.descriptionsExtracted = Math.max(sessionStats.descriptionsExtracted, parseInt(descMatch[1], 10));
         // Compter les blocages 403
         if (msg.includes('Bloqué (HTTP 403') || msg.includes('BLOCKED_403')) sessionStats.descriptionsBlocked++;
+        // Blocage d'accès structuré remonté par l'enrichissement (403/429/arrêt
+        // préventif) → succès partiel honnête.
+        if (msg.includes('[HTTP_ACCESS_REFUSED]') || msg.includes('[HTTP_429]') || msg.includes('[HTTP_RATE_LIMITED]')) {
+          sessionStats.accessBlocked = true;
+          sessionStats.accessCode = msg.includes('[HTTP_RATE_LIMITED]') || msg.includes('[HTTP_429]') ? 'HTTP_RATE_LIMITED' : 'HTTP_ACCESS_REFUSED';
+        }
+        if (msg.includes('Blocage détecté. Arrêt préventif')) sessionStats.accessBlocked = true;
       });
 
       activeRunner.on('progress', ({ percent, status, eta }) => {
@@ -287,23 +318,32 @@ function setupIpcHandlers(getMainWindow) {
       }
 
       const latestJob = JobHistoryManager.getLatestJob();
-      sendLog({ level: 'debug', message: `[job:start] Durée totale du job : ${Math.round((Date.now() - t0Total) / 1000)}s | stoppedEarly=${stoppedEarly}.` });
+      sendLog({ level: 'debug', message: `[job:start] Durée totale du job : ${Math.round((Date.now() - t0Total) / 1000)}s | stoppedEarly=${stoppedEarly} | accessBlocked=${sessionStats.accessBlocked}.` });
 
       // ─── Résumé de session ───
       sendSessionSummary();
 
-      if (stoppedEarly) {
-        sendProgress({ percent: 100, status: 'Sauvegardé (Interruption préventive IP)' });
+      // Succès PARTIEL : soit les pages ont été interrompues (stop préventif), soit
+      // l'enrichissement a été bloqué (403/429) alors que des annonces avaient
+      // déjà été extraites. On ne déclare JAMAIS « succès » dans ces cas.
+      const partial = stoppedEarly || sessionStats.accessBlocked;
+      if (partial) {
+        const reason = sessionStats.accessCode === 'HTTP_RATE_LIMITED'
+          ? 'Requête limitée (HTTP 429) pendant l\'enrichissement'
+          : sessionStats.accessCode === 'HTTP_ACCESS_REFUSED'
+            ? 'Accès refusé (HTTP 403) pendant l\'enrichissement'
+            : 'Interruption préventive anti-bot';
+        sendProgress({ percent: 100, status: 'Sauvegardé (succès partiel)' });
         sendStatus({
-          state: 'completed',
-          message: 'Scraping partiellement terminé (données acquises sauvegardées).',
+          state: 'partial',
+          message: `Succès partiel : ${sessionStats.adsKept} annonce(s) conservée(s). ${reason} — certaines descriptions manquent. L'export reste disponible.`,
           latestJob,
         });
       } else {
         sendProgress({ percent: 100, status: 'Terminé à 100 % !' });
         sendStatus({
           state: 'completed',
-          message: 'Scraping terminé avec succès !',
+          message: `Scraping terminé avec succès ! ${sessionStats.adsKept} annonce(s).`,
           latestJob,
         });
       }
@@ -319,8 +359,24 @@ function setupIpcHandlers(getMainWindow) {
         sendLog({ level: 'error', message: `❌ Erreur : ${err.message}` });
         sendLog({ level: 'debug', message: `[job:start] Détail erreur fatale : ${describeError(err)}` });
         sessionStats.errors++;
+        // Résultats partiels : le pipeline écrit annonces.json AVANT la phase
+        // d'enrichissement. Si l'échec survient après (ex. enrichissement bloqué),
+        // les annonces déjà extraites restent valides — on les signale au lieu de
+        // les perdre derrière une erreur générique.
+        const partialJson = path.join(resultsDir, 'annonces.json');
+        let partialAds = null;
+        if (fs.existsSync(partialJson)) {
+          const r = readWithChecksum(partialJson);
+          if (r.valid && Array.isArray(r.data) && r.data.length > 0) partialAds = r.data.length;
+        }
         sendSessionSummary();
-        sendStatus({ state: 'error', message: `Erreur : ${err.message}` });
+        if (partialAds != null) {
+          sessionStats.adsKept = partialAds;
+          sendLog({ level: 'warn', message: `[job:start] ${partialAds} annonce(s) déjà extraite(s) conservée(s) malgré l'échec de l'enrichissement.` });
+          sendStatus({ state: 'partial', message: `Succès partiel : ${partialAds} annonce(s) extraite(s) et conservée(s). ${err.message}`, latestJob: JobHistoryManager.getLatestJob() });
+        } else {
+          sendStatus({ state: 'error', message: `Erreur : ${err.message}` });
+        }
       }
     } finally {
       isRunning = false;

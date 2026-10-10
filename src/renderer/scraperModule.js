@@ -472,18 +472,23 @@ window.api.onProgress(({ percent, status, eta }) => {
 window.api.onStatusChange(({ state, message }) => {
   if (message) statusText.textContent = `Statut : ${message}`;
 
-  if (state === 'completed' || state === 'error' || state === 'cancelled') {
+  // États terminaux : succès complet, succès partiel, erreur, annulation,
+  // accès refusé (403), limitation de débit (429). Tous réactivent les boutons.
+  const terminalStates = ['completed', 'partial', 'error', 'cancelled', 'refused', 'rate_limited'];
+  if (terminalStates.includes(state)) {
     startBtn.disabled = false;
     stopBtn.disabled = true;
-    progressBar.style.width = '100%';
+    if (state !== 'refused' && state !== 'rate_limited') {
+      progressBar.style.width = '100%';
+    }
     etaText.textContent = '';
 
     // Un scraping vient de se terminer : on rafraîchit l'onglet de données
     // actuellement affiché pour qu'aucune donnée ancienne ne persiste après
     // un nouveau scraping (cohérence Historique / Explorateur / Statistiques).
-    // On ne rafraîchit QUE l'onglet actif pour éviter un rechargement inutile
-    // des autres (ils se rafraîchiront au prochain clic sur leur onglet).
-    if (state === 'completed') {
+    // On rafraîchit aussi après un succès PARTIEL : des annonces valides ont
+    // été sauvegardées même si l'enrichissement a été bloqué.
+    if (state === 'completed' || state === 'partial') {
       refreshActiveDataTab();
     }
   }

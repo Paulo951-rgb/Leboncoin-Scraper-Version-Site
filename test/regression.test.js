@@ -229,7 +229,7 @@ console.log('\n[3b2] Annulation : état cancelled');
   assert(/state:\s*'cancelled'/.test(ipcCodeCancel), 'ipcHandlers: sendStatus state=cancelled sur annulation');
   assert(/activeCancel\s*&&\s*activeCancel\.cancelled/.test(ipcCodeCancel), 'ipcHandlers: ne lance pas le pipeline si annulé après capture');
   const scraperCancel = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/scraperModule.js'), 'utf8');
-  assert(/state === 'completed' \|\| state === 'error' \|\| state === 'cancelled'/.test(scraperCancel),
+  assert(/terminalStates\s*=\s*\[[^\]]*'cancelled'/.test(scraperCancel) && /terminalStates\.includes\(state\)/.test(scraperCancel),
     'scraperModule: état cancelled traité comme terminal (boutons réactivés)');
   // Annulation PENDANT l'enrichissement : le runner renvoie 130, ipcHandlers doit
   // traiter ce code comme une annulation (sinon succès trompeur).
@@ -374,6 +374,17 @@ console.log('\n[3f] Préservation des résultats partiels');
       resolve();
     });
   });
+}
+
+// --- 3g. Pipeline : blocage d'accès pendant l'enrichissement → exit 3/4 ---
+// Le pipeline sort en code 3 (403) ou 4 (429) sur blocage d'accès pendant
+// l'enrichissement, APRÈS avoir conservé annonces.json (couvert par [3f]).
+console.log('\n[3g] Enrichissement bloqué → codes de sortie 3/4');
+{
+  const pipeExit = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
+  assert(/process\.exitCode = refused \? 3 : 4/.test(pipeExit), '[3g] pipeline: 403 → exit 3, 429 → exit 4');
+  assert(/Résultats partiels conservés/.test(pipeExit), '[3g] pipeline: message « résultats partiels conservés »');
+  assert(/stopReason/.test(pipeExit), '[3g] pipeline: motif d\'arrêt (stopReason) remonté');
 }
 
 
@@ -841,7 +852,7 @@ assert(!/negociable/.test(pipelineCode), 'pipeline: aucun negociable (champ supp
 
 // harCapturer : annulation pendant CAPTCHA ne persiste PAS une session bloquée
 const harCode = fs.readFileSync(path.join(base, 'services/scraping/harCapturer.js'), 'utf8');
-assert(/NE PAS persister la session/.test(harCode), 'harCapturer: annulation warmup ne persiste pas la session bloquée');
+assert(/NE PAS persister/.test(harCode), 'harCapturer: annulation warmup ne persiste pas la session bloquée');
 
 // harCapturer : détection CAPTCHA multi-vecteurs (iframe, URL, Cloudflare)
 assert(/arkoselabs|funcaptcha/.test(harCode), 'harCapturer: détection iframe Arkose/FunCaptcha');
@@ -850,17 +861,24 @@ assert(/captchaUrlMatch|URL suspecte/.test(harCode), 'harCapturer: détection CA
 
 // harCapturer : AUCUN reload pendant la résolution CAPTCHA
 assert(!/vPage\.reload\(\{ waitUntil/.test(harCode), 'harCapturer: PAS de reload pendant résolution CAPTCHA');
-assert(/POLL SANS reload/.test(harCode) || /sans recharger/.test(harCode), 'harCapturer: polling sans reload documenté');
+assert(/NE RECHARGE PAS|sans reload|sans recharger/.test(harCode), 'harCapturer: polling sans reload documenté');
 
 // harCapturer : warmup utilise networkidle
 assert(/waitUntil:\s*['"]networkidle['"]/.test(harCode), 'harCapturer: warmup utilise networkidle');
 assert(/sleep\(3000\)/.test(harCode), 'harCapturer: délai warmup 3s (rendu CAPTCHA différé)');
 
-// harCapturer : post-CAPTCHA — attend networkidle + grace period avant save
-assert(/stabilisation de la session/.test(harCode), 'harCapturer: post-CAPTCHA attend stabilisation session');
-assert(/2e CAPTCHA consécutif/.test(harCode), 'harCapturer: re-vérification post-CAPTCHA');
-assert(/résolution interactive/.test(harCode), 'harCapturer: CAPTCHA pendant capture → résolution interactive');
-assert(/Reprise après résolution CAPTCHA/.test(harCode), 'harCapturer: reprise capture après résolution CAPTCHA');
+// harCapturer : VÉRIFICATION RÉELLE de l'accès avant persistance (le point clé
+// de l'audit : la disparition visuelle du défi n'est PAS une preuve d'accès).
+assert(/_verifyAccess\s*\(/.test(harCode), 'harCapturer: vérification réelle de l\'accès (_verifyAccess)');
+assert(/verified:\s*false/.test(harCode) && /verified:\s*true/.test(harCode), 'harCapturer: résultat d\'accès structuré (verified true/false)');
+assert(/HTTP_ACCESS_REFUSED/.test(harCode), 'harCapturer: HTTP 403 → HTTP_ACCESS_REFUSED (accès refusé)');
+assert(/HTTP_RATE_LIMITED/.test(harCode), 'harCapturer: HTTP 429 → HTTP_RATE_LIMITED (limitation)');
+assert(/_parseRetryAfter/.test(harCode), 'harCapturer: Retry-After respecté (parsing)');
+assert(/CAPTCHA_DETECTED/.test(harCode) && /ACCESS_UNVERIFIED/.test(harCode), 'harCapturer: distinction CAPTCHA_DETECTED / ACCESS_UNVERIFIED');
+assert(/stabilisation/i.test(harCode), 'harCapturer: stabilisation avant vérification d\'accès');
+assert(/Accès non confirmé|Accès toujours non confirmé|accès non confirmé/i.test(harCode), 'harCapturer: arrêt si accès non confirmé (pas de fausse réussite)');
+assert(/résolution interactive|vérification interactive/.test(harCode), 'harCapturer: CAPTCHA pendant capture → vérification interactive');
+assert(/Reprise après confirmation/.test(harCode), 'harCapturer: reprise capture après confirmation d\'accès');
 
 // harCapturer : UA FIXE pour toute la capture
 assert(/this\._userAgent\s*=\s*getRandomUserAgent\(\)/.test(harCode), 'harCapturer: UA fixe choisi une fois dans le constructeur');
@@ -978,9 +996,9 @@ const harCode2 = fs.readFileSync(path.join(base, 'services/scraping/harCapturer.
 assert(/latestHttpStatus/.test(harCode2), 'harCapturer: tracking dynamique latestHttpStatus (fix vStatus figé)');
 assert(/vPage\.on\('response'/.test(harCode2), 'harCapturer: écouteur response pour statut HTTP temps réel');
 assert(/resourceType\(\) === 'document'/.test(harCode2), 'harCapturer: filtre document sur resourceType (ignore sous-ressources)');
-assert(/checkVBlocked = async \(\) => \{[\s\S]*?return this\._checkCaptcha\(vPage\)/.test(harCode2), 'harCapturer: polling content-based (plus de vStatus figé)');
-assert(/confirmedClear/.test(harCode2), 'harCapturer: confirmation anti-faux-positif (confirmedClear)');
-assert(!/while \(isBlocked && !this\.isCancelled\)/.test(harCode2), 'harCapturer: ancienne boucle isBlocked remplacée par confirmedClear');
+assert(/checkVBlocked\s*=\s*async\s*\(\)\s*=>\s*this\._checkCaptcha\(vPage\)/.test(harCode2), 'harCapturer: polling content-based (plus de vStatus figé)');
+assert(/visualClear/.test(harCode2), 'harCapturer: confirmation anti-faux-positif (visualClear)');
+assert(!/while \(isBlocked && !this\.isCancelled\)/.test(harCode2), 'harCapturer: ancienne boucle isBlocked remplacée par visualClear');
 assert(/POLL_INTERVAL_MS = 2000/.test(harCode2), 'harCapturer: polling 2s (detection rapide, plus 3s)');
 
 // Pipeline : exit code 1 sur erreur CLI (était 0 → runner croyait succès)
@@ -2392,6 +2410,97 @@ console.log('\n[29] CI Windows (build + release)');
 
   console.log('\n[29] OK');
 })();
+
+// --- 30. Audit : CAPTCHA / accès réel / états honnêtes (non-régression) ---
+// Vérifie que la résolution VISUELLE d'un CAPTCHA ne suffit plus : l'accès doit
+// être réellement confirmé (statut HTTP favorable), et 403/429 ne sont JAMAIS
+// présentés comme un succès. Tests unitaires purs (aucun navigateur réel).
+console.log('\n[30] Audit : accès réel, 403/429, états honnêtes');
+{
+  const { ErrorCodes, createError, classifyError } = require('../src/main/services/scraping/errorCodes');
+  const { HarCapturer } = require('../src/main/services/scraping/harCapturer');
+
+  // 30.1 Nouveaux codes structurés présents et classés.
+  assert(ErrorCodes.HTTP_ACCESS_REFUSED === 'HTTP_ACCESS_REFUSED', 'ErrorCodes: HTTP_ACCESS_REFUSED');
+  assert(ErrorCodes.HTTP_RATE_LIMITED === 'HTTP_RATE_LIMITED', 'ErrorCodes: HTTP_RATE_LIMITED');
+  assert(ErrorCodes.ACCESS_UNVERIFIED === 'ACCESS_UNVERIFIED', 'ErrorCodes: ACCESS_UNVERIFIED');
+  assert(ErrorCodes.CAPTCHA_NOT_CONFIRMED === 'CAPTCHA_NOT_CONFIRMED', 'ErrorCodes: CAPTCHA_NOT_CONFIRMED');
+  assert(classifyError(ErrorCodes.HTTP_ACCESS_REFUSED) === 'network_error', 'classifyError: HTTP_ACCESS_REFUSED → network_error');
+  assert(classifyError(ErrorCodes.HTTP_RATE_LIMITED) === 'network_error', 'classifyError: HTTP_RATE_LIMITED → network_error');
+  assert(classifyError(ErrorCodes.ACCESS_UNVERIFIED) === 'session_error', 'classifyError: ACCESS_UNVERIFIED → session_error');
+
+  // 30.2 _parseRetryAfter (pur) : secondes, date HTTP, absence.
+  const cap = new HarCapturer();
+  assert(cap._parseRetryAfter('120') === 120000, 'harCapturer._parseRetryAfter: "120" → 120000ms');
+  assert(cap._parseRetryAfter(null) === null, 'harCapturer._parseRetryAfter: null → null');
+  assert(cap._parseRetryAfter('garbage') === null, 'harCapturer._parseRetryAfter: entrée invalide → null');
+  assert(cap._parseRetryAfter('9999') === 300000, 'harCapturer._parseRetryAfter: plafonné à 5 min');
+
+  // 30.3 _verifyAccess : la décision dépend du STATUT HTTP, pas de l'écran.
+  const mkResp = (status, headers = {}, body = 'contenu de recherche valide '.repeat(4)) => ({
+    status: () => status,
+    headers: () => headers,
+    text: async () => body,
+  });
+  // On neutralise _checkCaptcha pour piloter l'état « défi visible ».
+  async function verifyWith({ status, captcha = false, body = 'contenu valide '.repeat(6), headers = {} }) {
+    const c = new HarCapturer();
+    c._checkCaptcha = async () => captcha;
+    const page = {
+      url: () => 'https://www.leboncoin.fr/recherche?page=1',
+      request: { get: async () => mkResp(status, headers, body) },
+    };
+    return c._verifyAccess(page, 'https://www.leboncoin.fr/recherche?page=1');
+  }
+
+  const ok = await verifyWith({ status: 200 });
+  assert(ok.verified === true && ok.code === null, '[30] accès 200 + contenu valide → verified=true');
+  const captchaRes = await verifyWith({ status: 200, captcha: true });
+  assert(captchaRes.verified === false && captchaRes.code === ErrorCodes.CAPTCHA_DETECTED, '[30] CAPTCHA encore visible → non confirmé (CAPTCHA_DETECTED)');
+  const blockedBody = await verifyWith({ status: 200, body: 'short' });
+  assert(blockedBody.verified === false && blockedBody.code === ErrorCodes.CAPTCHA_DETECTED, '[30] 200 mais contenu bloqué → non confirmé');
+  const f403 = await verifyWith({ status: 403 });
+  assert(f403.verified === false && f403.code === ErrorCodes.HTTP_403, '[30] CAPTCHA disparu mais HTTP 403 persistant → HTTP_403 (jamais un succès)');
+  const r429 = await verifyWith({ status: 429, headers: { 'retry-after': '120' } });
+  assert(r429.verified === false && r429.code === ErrorCodes.HTTP_429, '[30] HTTP 429 → HTTP_429 (non confirmé)');
+  assert(r429.retryAfterMs === 120000, '[30] HTTP 429 → Retry-After respecté (120000ms)');
+  // Échec de la requête (request.get lève) → ACCESS_UNVERIFIED.
+  const cUnv = new HarCapturer();
+  cUnv._checkCaptcha = async () => false;
+  const unvPage = { url: () => 'https://www.leboncoin.fr/r', request: { get: async () => { throw new Error('timeout'); } } };
+  const unv = await cUnv._verifyAccess(unvPage, 'https://www.leboncoin.fr/r');
+  assert(unv.verified === false && unv.code === ErrorCodes.ACCESS_UNVERIFIED, '[30] échec de requête → ACCESS_UNVERIFIED');
+
+  // 30.4 ipcHandlers : états honnêtes (refused / rate_limited / partial).
+  const ipcAudit = fs.readFileSync(path.join(base, 'core/ipcHandlers.js'), 'utf8');
+  assert(/'refused'/.test(ipcAudit) && /'rate_limited'/.test(ipcAudit), 'ipcHandlers: états refused/rate_limited distincts');
+  assert(/state:\s*'partial'/.test(ipcAudit), 'ipcHandlers: état partial (succès partiel) émis');
+  assert(/HTTP_ACCESS_REFUSED/.test(ipcAudit) && /HTTP_RATE_LIMITED/.test(ipcAudit), 'ipcHandlers: codes 403/429 structurés remontés');
+  assert(/captureResult\s*&&\s*captureResult\.blocked/.test(ipcAudit), 'ipcHandlers: ne lance pas le pipeline si accès non confirmé');
+  assert(/conservée\(s\) malgré l'échec|Succès partiel/.test(ipcAudit), 'ipcHandlers: résultats partiels signalés (pas de perte sur échec secondaire)');
+  // Jamais de « succès » quand partial.
+  assert(!/partial[\s\S]{0,200}state:\s*'completed'/.test(ipcAudit), 'ipcHandlers: partial n’est jamais rapporté comme completed');
+
+  // 30.5 pipelineRunner : codes 3 (403) / 4 (429) classés.
+  const runnerAudit = fs.readFileSync(path.join(base, 'services/scraping/pipelineRunner.js'), 'utf8');
+  assert(/code === 3/.test(runnerAudit) && /HTTP_ACCESS_REFUSED/.test(runnerAudit), 'pipelineRunner: exit 3 → HTTP_ACCESS_REFUSED');
+  assert(/code === 4/.test(runnerAudit) && /HTTP_RATE_LIMITED/.test(runnerAudit), 'pipelineRunner: exit 4 → HTTP_RATE_LIMITED');
+
+  // 30.6 pipeline : 429 distinct + Retry-After + code de sortie honnête + partiels.
+  const pipeAudit = fs.readFileSync(path.join(base, 'services/scraping/leboncoin-pipeline.js'), 'utf8');
+  assert(/BLOCKED_429/.test(pipeAudit), 'pipeline: 429 distinct (BLOCKED_429)');
+  assert(/retryAfter/.test(pipeAudit), 'pipeline: Retry-After capturé');
+  assert(/stopReason/.test(pipeAudit) && /process\.exitCode = refused \? 3 : 4/.test(pipeAudit), 'pipeline: code de sortie 3/4 sur blocage d’accès');
+  assert(/writeOutputs\(ads\);[\s\S]{0,120}process\.exitCode/.test(pipeAudit) || /Résultats partiels conservés/.test(pipeAudit), 'pipeline: résultats partiels écrits avant sortie d’erreur');
+
+  // 30.7 renderer : états terminaux étendus (partial/refused/rate_limited).
+  const scraperAudit = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/scraperModule.js'), 'utf8');
+  assert(/'partial'/.test(scraperAudit) && /'refused'/.test(scraperAudit) && /'rate_limited'/.test(scraperAudit), 'scraperModule: states partial/refused/rate_limited gérés');
+  const widgetAudit = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/widget.html'), 'utf8');
+  assert(/st === 'partial'/.test(widgetAudit), 'widget: état partial affiché');
+
+  console.log('\n[30] OK');
+}
 
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);

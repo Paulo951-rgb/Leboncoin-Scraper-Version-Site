@@ -187,14 +187,20 @@
     });
 
     window.widgetApi.onStatus((data) => {
-      statusDot.className = 'widget-status-dot status-' + (data.state || 'idle');
+      const st = data.state || 'idle';
+      // Le widget mappe les états « partiel » / « refusé » / « limité » sur des
+      // classes visuelles connues (pas de CSS dédiée) pour garder un retour clair.
+      const dotClass = (st === 'completed' || st === 'partial') ? 'status-completed'
+        : (st === 'refused' || st === 'rate_limited' || st === 'error') ? 'status-error'
+        : 'status-' + st;
+      statusDot.className = 'widget-status-dot ' + dotClass;
       if (data.message) {
         messageText.textContent = data.message;
       }
-      if (data.state === 'completed') {
-        percentText.textContent = '✓';
+      if (st === 'completed' || st === 'partial') {
+        percentText.textContent = st === 'partial' ? '~' : '✓';
         progressFill.style.width = '100%';
-      } else if (data.state === 'error') {
+      } else if (st === 'error' || st === 'refused' || st === 'rate_limited') {
         percentText.textContent = '!';
         progressFill.style.width = '0%';
       }
