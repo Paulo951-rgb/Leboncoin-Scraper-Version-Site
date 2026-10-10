@@ -3,6 +3,80 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Phase 3 : audit global A→Z (UI, intégrité, robustesse) — 2026-10-10
+
+### Corrigé
+
+- **Navigation par onglets totalement morte (P1)** : `app.js` attachait ses
+  écouteurs sur `.tab-btn`, classe qui n'existe plus depuis la refonte de la
+  sidebar (`.nav-item`). Résultat : **aucun** écouteur de navigation n'était
+  posé et cliquer un onglet (Logs, Historique, Explorateur, Stats) ne faisait
+  rien. Sélecteur remplacé par `[data-tab]`. (`renderer/app.js`)
+- **Fuite de champs internes dans les exports (P1)** : en profil Maximum,
+  `filterAdByFields` renvoie l'objet tel quel, exposant `raw` (objet brut
+  Leboncoin complet, plusieurs Ko par annonce) et `extractionErrors`. Les
+  champs internes `raw`, `extractionErrors`, `livraison` et `mainPropre` sont
+  désormais retirés avant toute écriture (`annonces.json` + `annonces.txt`).
+  (`services/scraping/leboncoin-pipeline.js`)
+- **`ErrorCodes.UNKNOWN` manquant (P2)** : référencé par `pipelineRunner` pour
+  le repli de code de sortie non classé, il était `undefined` → logs `[undefined]`.
+  Ajouté à `errorCodes.js`. (`services/scraping/errorCodes.js`)
+- **Éléments DOM absents (P2)** : `#statMedPrice` (carte « Prix Médian ») et le
+  bandeau `#structureWarning`/`#structureWarningText` étaient référencés par le
+  JS mais absents de `index.html` → la médiane n'était jamais affichée et
+  l'alerte de changement de structure restait inopérante. Ajoutés.
+  (`renderer/index.html`)
+- **Visibilité des données vendeur jamais appliquée (P2)** : `applySellerDataVisibility()`
+  n'était jamais appelée → la classe `body.seller-data-hidden` (qui masque la
+  colonne Vendeur) n'était jamais posée. Elle est désormais appliquée au
+  chargement et à chaque changement de paramètre. (`renderer/app.js`)
+- **Bandeau d'alerte structure jamais masqué (P2)** : une fois affiché, il
+  restait visible indéfiniment (y compris sur des runs OK suivants). Il est
+  réarmé au démarrage de chaque run. (`renderer/scraperModule.js`)
+- **Graphiques fantômes (P2)** : changer de session pour une session sans
+  annonces laissait à l'écran les graphiques de la session précédente
+  (`renderCharts` faisait un `return` sans détruire les instances). Les
+  instances sont désormais détruites quand il n'y a pas de données.
+  (`renderer/statsModule.js`)
+- **Sélection de session fantôme (P2)** : après suppression du job sélectionné,
+  le `<select>` conservait une valeur inexistante → explorateur/stats affichaient
+  une vue vide jusqu'à reselection manuelle. Repli sur `ALL`.
+  (`renderer/explorerModule.js`)
+- **Pagination sans limite (P2)** : `maxPages: parseInt(pages, 10)` pouvait
+  valoir `NaN`/`0` (champ vide ou 0), interprété comme « pas de limite ».
+  Bornage `[1, 500]`. (`core/ipcHandlers.js`)
+- **Historique d'annonces (P3)** : la détection de variation des likes lisait
+  des chemins inexistants (`statistiques.likes`/`likes_count`) ; lecture du
+  champ réel `likes` avec repli rétro-compat pour les anciens jobs.
+  (`services/jobs/jobHistory.js`)
+
+### Sécurité
+
+- **Validation des paramètres (P1)** : `config:save` fusionnait **n'importe
+  quel** objet fourni par le renderer dans `user-settings.json` (injection de
+  clés arbitraires ; `autoCleanJobsDays` pouvait être poussé à une valeur
+  énorme déclenchant une purge massive de jobs au démarrage suivant).
+  `saveSettings` filtre désormais les clés connues avec type/plage validés
+  (`sanitizeSettingsPatch`). (`core/settings.js`)
+- **`webviewTag` désactivé (P2)** : aucun `<webview>` n'est utilisé par l'UI
+  (le module IA Studio, seul consommateur, a été retiré). Le handler
+  `will-attach-webview` reste en défense en profondeur. (`main.js`)
+
+### Documentation
+
+- `docs/CHANGELOG.md` : présente entrée (Phase 3).
+- `docs/AUDIT_REPORT.md`, `docs/STABILITY_PLAN.md`, `docs/KNOWN_ISSUES.md`
+  actualisés.
+
+### Tests
+
+- Suite : 861 → **894** assertions réussies.
+- Ajouts : blocs `[20]` (navigation, fuites d'export, DOM, error codes), `[21]`
+  (UI/robustesse) et `[22]` (validation des paramètres). Trois assertions
+  obsolètes corrigées : elles exigeaient la présence de `livraison`/`mainPropre`
+  dans les exports et l'**absence** de `structureWarning`, ce qui contredisait
+  le modèle documenté et cassait l'UI.
+
 ## [Non publié] — Phase 2 : sécurisation réseau, annulation, dépendances — 2026-10-10
 
 ### Corrigé
