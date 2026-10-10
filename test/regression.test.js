@@ -2125,6 +2125,41 @@ console.log('\n[25] Contrat DOM statique (index.html)');
   console.log('\n[25] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [26] NON-RÉGRESSION — contrat IPC preload ↔ handlers main
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[26] Contrat IPC preload ↔ main');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const read = (p) => fs.readFileSync(path.join(repoRoot, p), 'utf8');
+  const preload = read('src/main/preload.js');
+  const widgetPreload = read('src/main/widgetPreload.js');
+  const ipc = read('src/main/core/ipcHandlers.js');
+  const main = read('src/main/main.js');
+
+  const chansFrom = (code, fn) => new Set([...code.matchAll(new RegExp(`ipcRenderer\\.(?:${fn})\\(['"]([^'"]+)['"]`, 'g'))].map((m) => m[1]));
+  const preloadChans = chansFrom(preload, 'send|invoke');
+  const widgetChans = chansFrom(widgetPreload, 'send|invoke');
+  const handled = new Set([
+    ...[...ipc.matchAll(/ipcMain\.(?:on|handle)\(['"]([^'"]+)['"]/g)].map((m) => m[1]),
+    ...[...main.matchAll(/ipcMain\.(?:on|handle)\(['"]([^'"]+)['"]/g)].map((m) => m[1]),
+  ]);
+
+  // Tout canal émis par le preload doit avoir un handler ipcMain (sinon l'appel
+  // renderer reste sans réponse). Classe de bug : canal renommé d'un seul côté.
+  const unhandled = [...preloadChans, ...widgetChans].filter((c) => !handled.has(c));
+  assert(unhandled.length === 0, `IPC: canaux preload sans handler → ${unhandled.join(', ')}`);
+
+  // Les événements poussés vers le renderer doivent être exposés par onLog/
+  // onProgress/onStatusChange du preload (sinon l'UI ne reçoit rien).
+  for (const ch of ['log', 'progress', 'status']) {
+    assert(new RegExp(`ipcRenderer\\.on\\('${ch}'`).test(preload), `preload: écoute l'événement "${ch}"`);
+    assert(new RegExp(`webContents\\.send\\('${ch}'`).test(ipc), `ipcHandlers: émet "${ch}"`);
+  }
+
+  console.log('\n[26] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

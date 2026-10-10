@@ -150,8 +150,8 @@ résolution DNS (fail-closed) — c'est documenté dans le code.
 
 ## 6. Tests exécutés
 
-- `node test/regression.test.js` → **901 réussis, 0 échoués** (base : 777 →
-  813 phase 1/2 → 861 → 894 → 898 → 901 phase 3).
+- `node test/regression.test.js` → **920 réussis, 0 échoués** (base : 777 →
+  813 phase 1/2 → 861 → 894 → 898 → 901 → 913 → 920 phase 3).
 - Phase 3 — ajouts : `[20]` navigation `[data-tab]`, absence de fuite interne
   (`raw`/`extractionErrors`/`livraison`/`mainPropre`) + vérification par fork
   réel, présence des éléments DOM (`statMedPrice`, `structureWarning`),
@@ -159,7 +159,9 @@ résolution DNS (fail-closed) — c'est documenté dans le code.
   repli likes `[21]` dropdown sans ID fantôme, bornage `maxPages`, reset bandeau
   structure, destruction des graphiques `[22]` validation des paramètres
   (clés inconnues, plages, énumérations, booléens stricts), `[23]` parité des
-  champs exportables renderer ↔ main process, `[24]` contrat `export-meta`.
+  champs exportables renderer ↔ main process, `[24]` contrat `export-meta`,
+  `[25]` contrat DOM statique (IDs `index.html` + cibles `[data-tab]`), `[26]`
+  contrat IPC preload ↔ handlers main.
 - Phase 3 — corrections d'assertions obsolètes : deux assertions exigeaient la
   présence de `livraison`/`mainPropre` dans les exports et une exigeait
   l'**absence** de `structureWarning`. Ces attentes contredisaient le modèle
