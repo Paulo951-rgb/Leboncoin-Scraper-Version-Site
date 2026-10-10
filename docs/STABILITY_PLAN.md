@@ -35,7 +35,7 @@
 |---|---|---|---|
 | P2-1 | Sécurisation du chemin Playwright (KI-3) : `isSafeFetchDestination` + allowlist URL de recherche + route-guard + `validateRemoteUrl` fail-closed | ✅ | Tests `urlSecurity`, `harCapturer` |
 | P2-2 | Audit dépendances (`npm audit`/`outdated`) + correctifs en plage | ✅ | 17→15 vulns |
-| P2-3 | Vérification config build Windows | ⚠️ partiel | `build/icon.ico` manquant (KI-7) ; `.exe` non généré |
+| P2-3 | Vérification config build Windows | ✅ | Icône fournie (KI-7 résolu) ; installeur + portable générés, Chromium Windows embarqué |
 | P2-4 | Tests intégration + scénarios d'erreur (HAR absent/invalide/données invalides) | ✅ | Tests `[3d]`, `[3e]` |
 | P2-5 | **Annulation pendant l'enrichissement** (P1 résiduel) : code 130 + SIGINT coopératif + résultats partiels | ✅ | Tests `[3b2]`, `[3f]` |
 | P2-6 | Cas limites médiane + validation données | ✅ | Tests AdStats |
@@ -57,6 +57,17 @@
 | P3-11 | `webviewTag` désactivé (surface d'attaque) | ✅ | Test `[20e]` |
 | P3-12 | Historique likes rétro-compat (`likes` + replis) | ✅ | Test `[20g]` |
 
+### Phase 3 (suite) — carte, ressources locales, packaging Windows
+
+| Lot | Objet | Statut | Vérification |
+|---|---|---|---|
+| P3b-1 | Réparation carte Stats (layerGroup + `computeMapPoints` pure + état) | ✅ | Tests `[27]` |
+| P3b-2 | Vendorisation Leaflet 1.9.4 / Chart.js + CSP `script-src 'self'` | ✅ | Tests `[27]` |
+| P3b-3 | Icône `build/icon.ico` (16→256) + `tools/generate-icon.py` | ✅ | Test `[28]` |
+| P3b-4 | Chromium Windows embarqué (`tools/prepare-browsers.js`) | ✅ | Tests `[28]` + inspection exe |
+| P3b-5 | Build Windows complet (NSIS + portable) via Wine/Xvfb | ✅ | `dist/*.exe` générés (PE vérifié) |
+| P3b-6 | Documentation build/scripts/platforme | ✅ | README + AGENTS |
+
 ## 3. Dépendances entre corrections
 
 - La correction d'annulation (Lot 6) dépend du contrat de sortie du pipeline
@@ -70,23 +81,26 @@
 
 - [x] Aucun P0 connu non résolu.
 - [x] Aucun P1 bloquant restant (annulation + navigation onglets corrigées).
-- [x] Tests de non-régression verts (894/894).
+- [x] Tests de non-régression verts (984/984).
 - [x] Nouveaux tests pour chaque bug corrigé.
 - [x] Syntaxe vérifiée sur tous les fichiers modifiés.
 - [x] Interfaces IPC appariées (preload ↔ handlers).
 - [x] Exports et historique vérifiés.
 - [x] Aucune suppression de fonctionnalité injustifiée.
-- [ ] **Build `.exe` Windows** — non exécutable dans cet environnement
-      (voir `docs/KNOWN_ISSUES.md`).
-- [ ] **Test d'interface réel** — non exécutable sans affichage/DOM.
+- [x] **Build `.exe` Windows généré** (Wine + Xvfb) : NSIS + portable produits,
+      Chromium Windows embarqué, artefacts vérifiés statiquement. *(Reste : test
+      de lancement sur Windows réel — voir `docs/KNOWN_ISSUES.md`.)*
+- [ ] **Test d'interface réel** — non exécutable sans affichage/DOM (smoke-boot
+      Electron réalisé sous Xvfb : fenêtre créée, IPC chargés, renderer rendu).
 
 ## 5. Actions restantes avant une release
 
-1. Générer le `.exe` sur une machine Windows (ou CI Windows) via
-   `npm run dist`, puis lancer l'installeur et vérifier :
-   - présence de Chromium dans `resources/browsers/`,
-   - démarrage (pas de DNS/réseau requis),
-   - création de `BASE_OUT_DIR` et persistance des paramètres.
+1. Valider sur une machine Windows réelle : exécuter l'installeur, lancer l'app,
+   vérifier :
+   - présence de Chromium dans `resources/browsers/` (déjà confirmé au build),
+   - démarrage hors ligne,
+   - création de `BASE_OUT_DIR` et persistance des paramètres,
+   - un job de scraping complet.
 2. Campagne manuelle d'interface : démarrage de job, arrêt, reprise,
    suppression de job, changement de thème, mode hors-ligne.
 3. Vérifier `npm audit` (non exécuté ici faute de registre accessible).

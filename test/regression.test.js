@@ -2262,6 +2262,70 @@ console.log('\n[27] Carte statsModule (logique pure)');
   console.log('\n[27] OK');
 })();
 
+// ═══════════════════════════════════════════════════════════════════════════
+// [28] DISTRIBUTION WINDOWS — icône, config electron-builder, prepare-browsers
+// ═══════════════════════════════════════════════════════════════════════════
+console.log('\n[28] Distribution Windows (packaging)');
+(() => {
+  const repoRoot = path.join(__dirname, '..');
+  const pkg = JSON.parse(fs.readFileSync(path.join(repoRoot, 'package.json'), 'utf8'));
+
+  // Icône : présente et multi-résolutions (Windows exige au moins 256px)
+  const icoPath = path.join(repoRoot, 'build', 'icon.ico');
+  assert(fs.existsSync(icoPath), 'dist: build/icon.ico présent');
+  const icoBuf = fs.readFileSync(icoPath);
+  const icoCount = icoBuf.readUInt16LE(4); // nombre d'images dans le .ICO
+  assert(icoCount >= 6, `dist: icône multi-résolutions (${icoCount} tailles ≥ 6)`);
+  assert(fs.existsSync(path.join(repoRoot, 'build', 'icon.png')), 'dist: build/icon.png (source) présent');
+
+  // Config electron-builder
+  const build = pkg.build || {};
+  assert(pkg.main === 'src/main/main.js', 'dist: main pointe vers src/main/main.js');
+  assert(build.appId && build.productName, 'dist: appId + productName définis');
+  assert(build.win && build.win.icon === 'build/icon.ico', 'dist: win.icon → build/icon.ico');
+  const targets = (build.win.target || []).map((t) => (typeof t === 'string' ? t : t.target));
+  assert(targets.includes('nsis'), 'dist: cible NSIS (installeur)');
+  assert(targets.includes('portable'), 'dist: cible portable (standalone)');
+  assert(build.nsis && build.nsis.oneClick === false, 'dist: NSIS oneClick=false (choix du dossier)');
+  assert(build.nsis.allowToChangeInstallationDirectory === true, 'dist: NSIS allowToChangeInstallationDirectory');
+  assert(build.nsis.createDesktopShortcut === true, 'dist: NSIS raccourci bureau');
+  assert(String(build.portable.artifactName).includes('Portable'), 'dist: artefact portable nommé');
+  assert(build.directories.output === 'dist', 'dist: sortie → dist/');
+  assert(build.directories.buildResources === 'build', 'dist: resources de build → build/');
+
+  // extraResources embarque le navigateur Playwright (browsers/)
+  const extra = build.extraResources || [];
+  const browsersRes = extra.find((e) => e.to === 'browsers');
+  assert(!!browsersRes, 'dist: extraResources → browsers/ (Chromium embarqué)');
+  assert(String(browsersRes.from).includes('.local-browsers'), 'dist: browsers/ vient de playwright-core/.local-browsers');
+  // Les fichiers de l'app incluent src + playwright
+  const files = build.files || [];
+  assert(files.some((f) => f.startsWith('src/')), 'dist: files inclut src/**');
+
+  // Scripts npm cohérents
+  const scripts = pkg.scripts || {};
+  assert(scripts.dist === 'electron-builder --win', 'dist: script npm run dist → electron-builder --win');
+  assert(scripts.pack === 'electron-builder --dir', 'dist: script npm run pack → --dir');
+  assert(/prepare-browsers\.js/.test(scripts.predist || ''), 'dist: predist prépare le Chromium Windows');
+  assert(/--platform=win/.test(scripts.predist || ''), 'dist: predist télécharge le Chromium Windows (pas l\'hôte Linux)');
+  assert(/prepare-browsers\.js/.test(scripts.browsers || ''), 'dist: script browsers présent');
+
+  // prepare-browsers : nom d'archive + sous-dossier par plateforme
+  const pb = require('../tools/prepare-browsers');
+  assert(pb.archiveName('win', 'x64') === 'chromium-win64.zip', 'dist: archive win-x64 = chromium-win64.zip');
+  assert(pb.archiveName('win', 'arm64') === 'chromium-win-arm64.zip', 'dist: archive win-arm64');
+  assert(pb.archiveName('linux', 'x64') === 'chromium-linux.zip', 'dist: archive linux');
+  assert(pb.extractedDir('win') === 'chrome-win', 'dist: extraction win → chrome-win/');
+  assert(pb.extractedDir('linux') === 'chrome-linux', 'dist: extraction linux → chrome-linux/');
+
+  // main.js : résolution du chemin Chromium embarqué quand packagé
+  const mainCode = fs.readFileSync(path.join(repoRoot, 'src/main/main.js'), 'utf8');
+  assert(/PLAYWRIGHT_BROWSERS_PATH/.test(mainCode), 'dist: main.js pointe PLAYWRIGHT_BROWSERS_PATH (app packagée)');
+  assert(/process\.resourcesPath.*browsers/.test(mainCode.replace(/\n/g, ' ')), 'dist: main.js utilise process.resourcesPath/browsers');
+
+  console.log('\n[28] OK');
+})();
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

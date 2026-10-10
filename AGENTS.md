@@ -142,6 +142,7 @@ styles.css                   habillage + 13 thèmes + stat-cards
 
 ## Tests
 - `node test/regression.test.js` → suite de non-régression (syntaxe + stubs Electron).
+  Sections : logique métier, rendu, sécurité, `[27]` carte (logique pure), `[28]` distribution/packaging.
 - Le test stub `electron` : BrowserWindow a `webContents.send` mais PAS `isDestroyed`.
 - Avant tout commit : `node --check` sur les fichiers modifiés + lancer la suite.
 
@@ -163,6 +164,8 @@ styles.css                   habillage + 13 thèmes + stat-cards
 ## Commandes
 - Lancer l'app : `npm start` (electron --max-old-space-size=8192 .)
 - Tests : `npm test` (ou `node test/regression.test.js`)
+- Navigateur Playwright : `npm run browsers` (hôte) / `npm run browsers:win` (Windows)
+- Icône : `npm run icon` (régénère `build/icon.ico` depuis `tools/generate-icon.py`, nécessite Pillow)
 - Build .exe : `npm run dist` (electron-builder --win) → NSIS + portable dans `dist/`
 - Packaging local : `npm run pack` (electron-builder --dir)
 
@@ -171,10 +174,33 @@ Configuration dans `package.json` → clé `build` :
 - **Cible** : Windows x64 (NSIS + portable).
 - **Chromium embarqué** : `extraResources` copie `node_modules/playwright-core/.local-browsers` dans `browsers/`.
 - **Fichiers inclus** : `src/**/*`, `package.json`, `node_modules/playwright*/**/*`.
-- **Icône** : `build/icon.ico`.
+- **Icône** : `build/icon.ico` (multi-résolutions 16→256, généré par `tools/generate-icon.py`).
 - **NSIS** : `oneClick: false`, `allowToChangeInstallationDirectory: true`, raccourcis bureau + menu démarrer.
 - **Portable** : `Leboncoin-Scraper-Pro-Portable-${version}.exe`.
 - Au runtime, `main.js` pointe `PLAYWRIGHT_BROWSERS_PATH` vers `process.resourcesPath/browsers` si l'app est packagée.
+
+## Tools (tools/)
+- `prepare-browsers.js` : télécharge le Chromium **de la plateforme cible** dans
+  `node_modules/playwright-core/.local-browsers/`. Indispensable en build croisé
+  (Linux → Windows) : `--platform=win` récupère `chromium-win64.zip` ; sans cela,
+  l'exe embarqué contiendrait un Chromium Linux et le scraping planterait.
+  Appelé par les hooks `prepack`/`predist`/`prebuild`. Idempotent.
+  **Piège** : les archives Playwright s'appellent `chromium-win64.zip` /
+  `chromium-mac.zip` / `chromium-linux.zip` (PAS `chromium-win.zip`), et le
+  sous-dossier extrait est `chrome-win` / `chrome-mac` / `chrome-linux`.
+- `generate-icon.py` : génère `build/icon.ico` + `build/icon.png` (Pillow).
+
+## Build croisé Windows depuis Linux
+`electron-builder --win` sous Linux exige **Wine** (édition des ressources de
+l'.exe via `rcedit`) ET un affichage (Xvfb) — sinon rcedit échoue avec
+`XDG_RUNTIME_DIR is invalid` / `could not load kernel32.dll`. Séquera validée :
+```bash
+sudo dpkg --add-architecture i386 && sudo apt-get install -y wine wine64 wine32:i386 xvfb
+export WINEPREFIX=/tmp/wineprefix WINEARCH=win64 XDG_RUNTIME_DIR=/tmp/runtime-openhands
+xvfb-run -a npm run dist
+```
+Sans Wine, `-c.win.signAndEditExecutable=false` permet de produire `dist/win-unpacked`
+(dossier app lançable) mais PAS l'installeur ni le portable.
 
 ## Pièges corrigés (à ne PAS réintroduire)
 - **Navigation onglets** : `app.js` DOIT cibler `[data-tab]` (pas l'ancienne

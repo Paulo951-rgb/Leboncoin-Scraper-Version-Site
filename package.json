@@ -8,8 +8,14 @@
   "scripts": {
     "start": "electron --max-old-space-size=8192 .",
     "test": "node test/regression.test.js",
+    "browsers": "node tools/prepare-browsers.js",
+    "browsers:win": "node tools/prepare-browsers.js --platform=win",
+    "icon": "python3 tools/generate-icon.py",
+    "prepack": "node tools/prepare-browsers.js",
     "pack": "electron-builder --dir",
+    "predist": "node tools/prepare-browsers.js --platform=win",
     "dist": "electron-builder --win",
+    "prebuild": "node tools/prepare-browsers.js --platform=win",
     "build": "electron-builder --win"
   },
   "dependencies": {

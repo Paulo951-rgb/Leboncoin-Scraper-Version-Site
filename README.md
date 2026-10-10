@@ -94,10 +94,23 @@ Aucune connaissance technique requise. Vous n'avez **pas besoin de Node.js, npm 
 2. Double-cliquez sur le `.exe` et suivez l'assistant d'installation (choix du dossier, raccourci bureau/menu démarrer).
 3. Lancez **Leboncoin Scraper Pro** depuis le raccourci créé.
 4. Au premier lancement, un écran d'information légal s'affiche : lisez-le et acceptez-le.
-5. L'application vérifie automatiquement la présence du navigateur Chromium (intégré à l'installeur). Si celui-ci manque, un bandeau rouge vous indique la marche à suivre.
+5. Le navigateur Chromium est **intégré à l'installeur** (aucun téléchargement au premier lancement). L'application vérifie sa présence et affiche un bandeau si le fichier est absent (installation incomplète).
+
+> **Note** : les installeurs sont produits pour **Windows x64 uniquement**. Aucun build macOS ou Linux n'est fourni par la configuration actuelle (`electron-builder --win`). Sur Windows ARM64, l'émulation x64 de Windows 11 est nécessaire.
 
 ### Version portable
-La version portable (`Leboncoin-Scraper-Pro-Portable-x.x.x.exe`) ne nécessite aucune installation : décompressez-la dans un dossier et lancez l'exécutable.
+La version portable (`Leboncoin-Scraper-Pro-Portable-x.x.x.exe`) est un **exécutable autonome** : il n'y a rien à décompresser ni à installer. Double-cliquez simplement dessus pour lancer l'application. Les données sont alors écrites dans un dossier `output/` à côté de l'exécutable.
+
+> Le démarrage d'un exécutable portable (~260 Mo) peut prendre quelques secondes : l'archive embarquée est décompressée dans un dossier temporaire au premier lancement.
+
+### Vérifier l'intégrité du téléchargement (facultatif)
+Chaque fichier `.exe` publié est accompagné de son empreinte SHA-256. Sous PowerShell :
+
+```powershell
+Get-FileHash ".\Leboncoin Scraper Pro Setup 1.0.0.exe" -Algorithm SHA256
+```
+
+Comparez la valeur obtenue avec celle publiée dans les notes de version.
 
 ### Emplacement des données
 - **Version installée** : `Documents/Leboncoin Scraper Pro/`
@@ -133,10 +146,15 @@ npm start
 | Script | Commande | Rôle |
 |---|---|---|
 | `npm start` | `electron --max-old-space-size=8192 .` | Lance l'app en développement |
-| `npm test` | `node test/regression.test.js` | Suite de non-régression (suite de non-régression) |
-| `npm run pack` | `electron-builder --dir` | Packaging local (non distribuable) |
-| `npm run dist` | `electron-builder --win` | Génère le `.exe` d'installation Windows |
+| `npm test` | `node test/regression.test.js` | Suite de non-régression |
+| `npm run browsers` | `node tools/prepare-browsers.js` | Télécharge le Chromium de la plateforme hôte dans `node_modules` |
+| `npm run browsers:win` | `node tools/prepare-browsers.js --platform=win` | Télécharge le Chromium **Windows** (build croisé sur Linux/macOS) |
+| `npm run icon` | `python3 tools/generate-icon.py` | Régénère `build/icon.ico` (nécessite Pillow) |
+| `npm run pack` | `electron-builder --dir` | Packaging local (non distribuable) — `prepack` prépare le Chromium |
+| `npm run dist` | `electron-builder --win` | Génère l'installeur + la version portable Windows — `predist` prépare le Chromium Windows |
 | `npm run build` | `electron-builder --win` | Alias de `dist` |
+
+> Les scripts `prepack`/`predist`/`prebuild` (hooks npm automatiques) appellent `prepare-browsers.js` pour garantir que le Chromium embarqué correspond bien à la plateforme cible : sur un poste Windows, le Chromium hôte ; lors d'un build croisé Windows depuis Linux, le Chromium Windows (`--platform=win`).
 
 ---
 
@@ -270,7 +288,8 @@ leboncoin-scraper-app/
         ├── explorerModule.js           # Onglet Explorateur (table, filtres, modal)
         ├── statsModule.js              # Onglet Stats (graphiques, carte)
         ├── helpModule.js                # Module d'aide (FAQ + guide + feedback)
-        └── styles.css                    # Habillage + 13 thèmes + stat-cards
+        ├── styles.css                    # Habillage + 13 thèmes + stat-cards
+        └── vendor/                       # Bibliothèques locales (Leaflet, Chart.js) — hors CDN
 ```
 
 ---
@@ -335,7 +354,7 @@ Le build utilise **electron-builder** (configuré dans `package.json`).
 ### Prérequis
 - Node.js + npm installés.
 - Dépendances installées (`npm install`).
-- Chromium Playwright téléchargé (`npx playwright install chromium`).
+- Chromium Playwright téléchargé **pour la plateforme cible** : `npm run browsers` (hôte) ou `npm run browsers:win` (Windows, y compris build croisé depuis Linux/macOS). Les hooks `predist`/`prebuild` l'exécutent automatiquement.
 
 ### Générer l'installeur Windows
 
@@ -345,14 +364,21 @@ npm run dist
 
 Produit dans `dist/` :
 - `Leboncoin Scraper Pro Setup x.x.x.exe` — installeur NSIS (choix du dossier, raccourcis).
-- `Leboncoin-Scraper-Pro-Portable-x.x.x.exe` — version portable.
+- `Leboncoin-Scraper-Pro-Portable-x.x.x.exe` — version portable autonome.
 
 ### Configuration electron-builder
 
 - **Cible** : Windows x64 (NSIS + portable).
-- **Chromium embarqué** : `extraResources` copie le binaire Playwright dans `browsers/`.
+- **Chromium embarqué** : `extraResources` copie `node_modules/playwright-core/.local-browsers` (dont le Chromium **Windows**) dans `resources/browsers/` ; `main.js` pointe `PLAYWRIGHT_BROWSERS_PATH` vers ce dossier quand l'app est packagée.
 - **Fichiers inclus** : `src/**/*`, `package.json`, `node_modules/playwright*/**/*`.
-- **Icône** : `build/icon.ico`.
+- **Icône** : `build/icon.ico` (multi-résolutions, régénérable via `npm run icon`).
+
+> **Build croisé** : produire un installeur Windows depuis Linux nécessite **Wine** (édition des ressources de l'.exe via `rcedit`) et, sous Linux, `xvfb-run` (Wine a besoin d'un affichage). Exemple validé :
+> ```bash
+> export WINEPREFIX=/tmp/wineprefix WINEARCH=win64 XDG_RUNTIME_DIR=/tmp/runtime-openhands
+> xvfb-run -a npm run dist
+> ```
+> Sur un poste Windows, `npm run dist` fonctionne directement, sans Wine.
 
 ### Packaging local (test, non distribuable)
 

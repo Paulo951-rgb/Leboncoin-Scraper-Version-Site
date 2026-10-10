@@ -162,6 +162,12 @@ résolution DNS (fail-closed) — c'est documenté dans le code.
   champs exportables renderer ↔ main process, `[24]` contrat `export-meta`,
   `[25]` contrat DOM statique (IDs `index.html` + cibles `[data-tab]`), `[26]`
   contrat IPC preload ↔ handlers main.
+- Phase 3 (suite) — ajouts : `[27]` logique carte Stats (`computeMapPoints`,
+  `isValidLatLng`, déduplication, filtrage main propre, état vide) + vendorisation
+  locale (Leaflet/Chart.js présents) + CSP `script-src 'self'` sans CDN ;
+  `[28]` distribution Windows (icône multi-résolutions, configuration
+  electron-builder, scripts npm, `prepare-browsers` par plateforme, chemin
+  `PLAYWRIGHT_BROWSERS_PATH`). Suite : 955 → **984 réussis, 0 échoués**.
 - Phase 3 — corrections d'assertions obsolètes : deux assertions exigeaient la
   présence de `livraison`/`mainPropre` dans les exports et une exigeait
   l'**absence** de `structureWarning`. Ces attentes contredisaient le modèle
@@ -174,12 +180,16 @@ résolution DNS (fail-closed) — c'est documenté dans le code.
 
 ## 7. Limites de l'audit
 
-- **Aucun test d'interface graphique réel** : pas de framework UI en place, et
-  l'environnement est un conteneur sans affichage. Les modules renderer sont
-  vérifiés par lecture + syntaxe + tests d'invariants, pas par exécution DOM.
-- **Aucun build `.exe` Windows** : `electron-builder --win` n'est pas exécutable
-  ici (pas de wine/Windows). La configuration `build` de `package.json` a été
-  relue mais l'installeur n'a pas été généré ni lancé.
+- **Aucun test d'interface graphique réel** : pas de framework UI en place. Les
+  modules renderer sont vérifiés par lecture + syntaxe + tests d'invariants, et
+  par un **smoke-boot Electron** sous Xvfb (fenêtre créée, IPC chargés, renderer
+  rendu) — mais pas par des interactions DOM automatiques.
+- **Build `.exe` Windows généré et vérifié statiquement** : `electron-builder
+  --win` a été exécuté (Wine + Xvfb, `xvfb-run -a npm run dist`). Installeur NSIS
+  et version portable produits ; en-tête PE, chaînes de version, icône et Chromium
+  **Windows** embarqué (`resources/browsers/chromium-1097/chrome-win/chrome.exe`)
+  confirmés. **Le lancement sous Windows réel n'a pas été testé** (environnement
+  Linux) — voir `docs/KNOWN_ISSUES.md`.
 - **Aucun scraping Leboncoin réel** : le réseau et le site ne sont pas sollicités.
   Les tests du pipeline utilisent un HAR synthétique.
 - Les tests « dal » de stubs Electron ne remplacent pas un lancement réel.
