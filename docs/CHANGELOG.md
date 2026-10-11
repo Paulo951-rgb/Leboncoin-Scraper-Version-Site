@@ -3,6 +3,40 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Feuille de route : tests, UX, sécurité, perf — 2026-10-11
+
+### Ajouté
+
+- **Tests (Thème 3)** : fixtures HAR synthétiques (`test/fixtures/`) — résultats,
+  doublons, 403, page vide, pages de détail avec/sans `__NEXT_DATA__` ; section
+  `[36]` pipeline-sur-fixtures ; section `[37]` tests DOM réels via **jsdom** ;
+  section `[38]` pour les modules main sous-couverts (settings, logger,
+  fileManager, storageCleaner, jobHistory, ipcHandlers, rateLimiter, diagnostics,
+  captureState). Couverture instrumentée par **c8** (`.c8rc.json`, seuil 70 %),
+  script `npm run coverage`, gate CI dans `.github/workflows/build-windows.yml`.
+- **UX (Thème 5)** : `showToast()` (notifications non bloquantes, `createElement`,
+  sans injection HTML), `showScrapeError()` (bandeau persistant sur refus
+  403/429 / erreur / succès partiel, avec bouton « Voir les logs »), `askConfirm()`
+  (modal de confirmation maison remplaçant `window.confirm`). Les 11 `alert()`/
+  `confirm()` natifs du renderer ont été retirés. Éléments `#toastContainer`,
+  `#scrapeErrorBanner`, `#askModal` + styles dédiés.
+- **Sécurité (Thème 6)** : `'unsafe-inline'` retiré de `script-src` (CSP). Les 17
+  handlers inline (`onclick`/`onchange`) générés par `innerHTML` sont remplacés
+  par des attributs `data-action`/`data-id`/`data-url` + un listener délégué
+  unique (`installDelegatedActions`) → un XSS ne peut plus exécuter de script
+  inline. IPC secrets : liste blanche de clés (`secret:get`), validation du nom
+  de clé et du type de valeur. `main.js` refuse par défaut toutes les permissions
+  navigateur.
+- **Perf (Thème 7)** : compteur de logs visibles incrémental (`_visibleLogCount`)
+  au lieu d'un `filter()` O(n) par log (O(n²) → O(n)) ; débounce des filtres
+  texte de l'explorateur (180 ms) ; suppression d'un `items.indexOf()` O(n) dans
+  `fetchBatchInPage` (mode séquentiel) ; helper `debounce(fn, wait)`.
+
+### Tests
+
+- `npm test` → 1265 réussis / 0 échoués. `npm run coverage` → exit 0
+  (statements/lignes 70.45 %, branches 75.72 %, fonctions 87.5 %).
+
 ## [Non publié] — Diagnostic 403 : compteurs, backoff, harmonisation UA — 2026-10-10
 
 ### Diagnostiqué (preuves dans le code / l'historique)
