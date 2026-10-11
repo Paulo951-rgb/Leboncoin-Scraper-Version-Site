@@ -19,7 +19,7 @@ class PipelineRunner extends EventEmitter {
 
   run(options) {
     return new Promise((resolve, reject) => {
-      const { harPath, outDir, noDesc = false, limit, fresh = false, speed, headless = true, userAgent, profileId, profileFields, includeSellerData = true } = options;
+      const { harPath, outDir, noDesc = false, limit, fresh = false, speed, headless = true, userAgent, profileId, profileFields, includeSellerData = true, baseOutDir } = options;
 
       if (!harPath) return reject(new Error('harPath est requis pour exécuter le pipeline.'));
       if (!outDir) return reject(new Error('outDir est requis pour exécuter le pipeline.'));
@@ -44,6 +44,10 @@ class PipelineRunner extends EventEmitter {
           remainingArgs.push('--profile-fields', profileFields.join(','));
         }
         if (!includeSellerData) remainingArgs.push('--no-seller-data');
+        // BASE_OUT_DIR transmis explicitement : le pipeline forké n'a pas accès
+        // à `electron`, il ne peut donc pas importer config/constants. Ce chemin
+        // lui sert à localiser la session globale (global-session.json).
+        if (baseOutDir) remainingArgs.push('--base-out-dir', String(baseOutDir));
 
       this.emit('log', {
         level: 'info',

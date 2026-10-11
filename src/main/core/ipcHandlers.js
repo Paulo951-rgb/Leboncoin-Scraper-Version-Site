@@ -24,6 +24,11 @@ function setupIpcHandlers(getMainWindow) {
   // pipeline forké s'arrêtent proprement.
   let activeCancel = null;
 
+  // Identifiant de corrélation du job courant : attaché à chaque log/statut pour
+  // permettre de filtrer/regrouper les lignes d'un même run (utile quand
+  // plusieurs sessions se succèdent dans la même console).
+  let currentJobId = null;
+
   // Getter de fenêtre principale : renvoie null si détruite/fermée,
   // évitant les crashes "Cannot read properties of null" sur webContents.send.
   const getWin = () => {
@@ -61,9 +66,9 @@ function setupIpcHandlers(getMainWindow) {
     }
   }, 3000);
 
-  const sendLog = (data) => { const w = getWin(); if (w) w.webContents.send('log', data); };
+  const sendLog = (data) => { const w = getWin(); if (w) w.webContents.send('log', currentJobId ? { ...data, jobId: currentJobId } : data); };
   const sendProgress = (data) => { const w = getWin(); if (w) w.webContents.send('progress', data); };
-  const sendStatus = (status) => { const w = getWin(); if (w) w.webContents.send('status', status); };
+  const sendStatus = (status) => { const w = getWin(); if (w) w.webContents.send('status', currentJobId ? { ...status, jobId: currentJobId } : status); };
 
   // ─── Suivi de session pour le résumé de fin de scraping ────────────────────
   // Les compteurs sont incrémentés au fil du job (via l'écoute des logs du
@@ -146,6 +151,7 @@ function setupIpcHandlers(getMainWindow) {
     const jobDir = path.join(JOBS_DIR, `job-${timestamp}`);
     const harPath = path.join(jobDir, 'capture.har');
     const resultsDir = path.join(jobDir, 'results');
+    currentJobId = `job-${timestamp}`;
 
     sendLog({ level: 'debug', message: `[job:start] Config reçue — searchUrl=${searchUrl} | pages=${pages} | noDesc=${noDesc} | limit=${limit ?? '(aucun)'} | proxy=${proxyUrl || 'aucun'}` });
     sendLog({ level: 'debug', message: `[job:start] Dossiers — jobDir=${jobDir} | harPath=${harPath} | resultsDir=${resultsDir}` });
@@ -213,10 +219,18 @@ function setupIpcHandlers(getMainWindow) {
         else if (level === 'debug') sessionStats.debugs++;
         // Extraction des métriques depuis les logs du pipeline
         const msg = data.message || '';
-        // 🟢 FIX : Détection d'interruption élargie (prend en compte "interrompu" et "restreint")
-        if (msg.includes('interrompu') || msg.includes('restreint')) {
+        // Signal d'arrêt STRUCTURÉ (machine-lisible) émis par le pipeline :
+        //   « [STOP_REASON] code=HTTP_403 status=403 reason=access_refused consecutiveBlocks=3 »
+        // Remplace les heuristiques de texte fragiles ("interrompu"/"restreint")
+        // qui pouvaient déclencher un faux « succès partiel » sur un simple
+        // message de détection CAPTCHA (le mot "restreint" apparaît dans les
+        // marqueurs de détection, pas forcément dans une vraie restriction).
+        const stopMatch = msg.match(/\[STOP_REASON\]\s+code=(\S+)\s+status=(\S*)\s+reason=(\S+)/);
+        if (stopMatch) {
           stoppedEarly = true;
           sessionStats.stoppedEarly = true;
+          sessionStats.accessBlocked = true;
+          sessionStats.accessCode = /429/.test(stopMatch[1]) ? 'HTTP_RATE_LIMITED' : 'HTTP_ACCESS_REFUSED';
         }
         // Compter les annonces extraites. Le pipeline émet :
         //   « Étape HAR -> Annonces terminée : N annonces extraites. » (info)
@@ -266,6 +280,9 @@ function setupIpcHandlers(getMainWindow) {
         speed: userSettings.scrapeSpeed || 'moyen',
         headless: userSettings.headless !== false,
         userAgent: captureUserAgent,
+        // BASE_OUT_DIR : le pipeline forké n'a pas accès à electron → on lui
+        // transmet le chemin pour qu'il localise la session globale.
+        baseOutDir: BASE_OUT_DIR,
         // Profil de données (Défaut / Maximum / Personnalisé) : liste concrète de
         // clés de champs à exporter, appliquée par le pipeline (JSON + TXT).
         profileId: resolvedProfileId,
@@ -371,6 +388,7 @@ function setupIpcHandlers(getMainWindow) {
       activeCapturer = null;
       activeRunner = null;
       activeCancel = null;
+      currentJobId = null;
     }
   });
 

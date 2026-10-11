@@ -241,7 +241,7 @@ console.log('\n[3b2] Annulation : état cancelled');
   const pipelineCancelCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
   assert(/process\.once\('SIGINT'/.test(pipelineCancelCode), 'pipeline: handler SIGINT installé (annulation coopérative)');
   assert(/this\.cancelled\s*=\s*true/.test(pipelineCancelCode), 'pipeline: drapeau cancelled positionné sur SIGINT');
-  assert(/shouldStopAll \|\| this\.cancelled/.test(pipelineCancelCode), 'pipeline: boucle d\'enrichissement interrompue si annulé');
+  assert(/this\.circuit\.shouldStop\(\) \|\| this\.cancelled/.test(pipelineCancelCode), 'pipeline: boucle d\'enrichissement interrompue si annulé (disjoncteur + cancelled)');
   assert(/process\.removeListener\('SIGINT'/.test(pipelineCancelCode), 'pipeline: handler SIGINT retiré en finally (pas de fuite)');
 }
 
@@ -384,7 +384,7 @@ console.log('\n[3g] Enrichissement : moteur historique restauré');
   const pipeExit = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
   assert(!/process\.exitCode = refused \? 3 : 4/.test(pipeExit), '[3g] pipeline: plus d\'exit 3/4 (moteur historique)');
   assert(!/stopReason/.test(pipeExit), '[3g] pipeline: plus de stopReason (moteur historique)');
-  assert(/Bloqué \(HTTP 403\/429\)/.test(pipeExit), '[3g] pipeline: gestion historique des blocages 403/429');
+  assert(/Bloqué \(HTTP 403\)/.test(pipeExit), '[3g] pipeline: gestion des blocages 403 (disjoncteur structuré)');
 }
 
 
@@ -2446,7 +2446,11 @@ console.log('\n[30] Restauration du moteur historique de scraping');
   const pipeAudit = fs.readFileSync(path.join(base, 'services/scraping/leboncoin-pipeline.js'), 'utf8');
   assert(!/BLOCKED_429/.test(pipeAudit), 'pipeline: plus de 429 distinct (moteur historique)');
   assert(!/stopReason/.test(pipeAudit), 'pipeline: plus de stopReason (moteur historique)');
-  assert(/concurrency: 25, minDelayMs: 50/.test(pipeAudit), 'pipeline: presets historiques restaurés (ultra-rapide 25/50)');
+  // Presets centralisés dans config/scraping.js (source unique partagée avec le
+  // main process) ; le pipeline les consomme via getSpeedPreset().
+  const presetsAudit = fs.readFileSync(path.join(base, 'config/scraping.js'), 'utf8');
+  assert(/concurrency: 25, minDelayMs: 50/.test(presetsAudit), 'config/scraping: presets historiques (ultra-rapide 25/50)');
+  assert(/getSpeedPreset/.test(pipeAudit), 'pipeline: consomme getSpeedPreset() (presets centralisés)');
 
   // renderer : les nouveaux états restent tolérés (aucune régression UI).
   const scraperAudit = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/scraperModule.js'), 'utf8');
@@ -2492,15 +2496,16 @@ console.log('\n[31] Audit 403 : compteurs + backoff + Retry-After');
   await rl2.waitAfter({ durationMs: 100, blocked: true, status: 403 });
   assert(rl2.currentDelayMs() === 6000, '[31] backoff historique: plafonné à maxDelayMs');
 
-  // 31.3 Pipeline : presets historiques restaurés (rapides) + pas de Retry-After.
+  // 31.3 Presets historiques centralisés (config/scraping.js) + pas de Retry-After.
   const pipe = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
   assert(!/noWait: true/.test(pipe), '[31] pipeline: plus de noWait (moteur historique)');
   assert(!/pendingRetryAfterMs/.test(pipe), '[31] pipeline: plus de pause Retry-After (moteur historique)');
   // Presets historiques : moyen 10/500, rapide 15/200, ultra-rapide 25/50.
-  const presetMatch = pipe.match(/moyen:\s*\{ concurrency: (\d+),\s*minDelayMs: (\d+)/);
+  const presetsSrc = fs.readFileSync(path.join(__dirname, '..', 'src/main/config/scraping.js'), 'utf8');
+  const presetMatch = presetsSrc.match(/moyen:\s*\{ concurrency: (\d+),\s*minDelayMs: (\d+)/);
   assert(presetMatch && parseInt(presetMatch[1], 10) === 10, '[31] presets: « moyen » = concurrence 10 (historique)');
   assert(presetMatch && parseInt(presetMatch[2], 10) === 500, '[31] presets: « moyen » = délai de base 500ms (historique)');
-  assert(/concurrency: 25, minDelayMs: 50/.test(pipe), '[31] presets: « ultra-rapide » 25/50 (historique)');
+  assert(/concurrency: 25, minDelayMs: 50/.test(presetsSrc), '[31] presets: « ultra-rapide » 25/50 (historique)');
 
   // 31.4 Métrique d'annonces extraites émise par le pipeline.
   assert(/\[METRICS\] \$\{ads\.length\} annonces extraites uniques/.test(pipe), '[31] pipeline: ligne [METRICS] annonces extraites');

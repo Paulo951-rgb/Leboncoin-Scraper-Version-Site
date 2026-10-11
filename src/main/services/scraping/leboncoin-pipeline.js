@@ -22,17 +22,13 @@ const adFields = require('./adFields');
 const { ErrorCodes, createError } = require('./errorCodes');
 const { filterAdByFields, toReadableBlock } = require('../exporting/exportFields');
 const { DEFAULT_PROFILE_FIELDS } = require('../exporting/dataProfiles');
+const { PIPELINE_DEFAULTS, getSpeedPreset, BLOCK_THRESHOLD } = require('../../config/scraping');
+const { CircuitBreaker } = require('./circuitBreaker');
+const { NetworkJournal } = require('./networkJournal');
+const { getJobSessionPathFromResults, getGlobalSessionPath } = require('./sessionPaths');
 
-const DEFAULTS = Object.freeze({
-  // Valeurs par défaut pour les options du pipeline.
-  minDelayMs: 500,
-  maxDelayMs: 1000,
-  headless: false,
-  outDir: '.',
-  concurrency: 10,
-  recycleContextEvery: 200, // Recycler la mémoire tous les 200 produits extraits
-  includeSellerData: true,
-});
+// Valeurs par défaut du pipeline, centralisées dans config/scraping.js.
+const DEFAULTS = Object.freeze({ ...PIPELINE_DEFAULTS });
 
 class CliError extends Error {}
 
@@ -70,6 +66,12 @@ function parseArgs(argv) {
       case '--profile-id':
         // 'default' | 'maximum' | 'custom'
         opts.profileId = argv[++i];
+        break;
+      case '--base-out-dir':
+        // BASE_OUT_DIR transmis par le main process : le pipeline forké n'a pas
+        // accès à `electron`/`app`, donc il ne peut pas importer config/constants.
+        // Ce chemin lui sert à localiser la session globale (global-session.json).
+        opts.baseOutDir = argv[++i];
         break;
         case '--profile-fields':
           // Liste de clés séparées par des virgules. Liste concrète de champs à
@@ -475,8 +477,11 @@ class DescriptionEnricher {
   constructor(opts, logger) {
     this.opts = opts;
     this.logger = logger;
-    this.consecutiveBlocks = 0;
-    this.shouldStopAll = false;
+    // Disjoncteur explicite : remplace les compteurs dispersés
+    // (consecutiveBlocks/shouldStopAll). États normal→slowed→blocked→stopped.
+    this.circuit = new CircuitBreaker({ blockThreshold: BLOCK_THRESHOLD });
+    // Journal réseau structuré (compteurs objectifs pour report.json).
+    this.journal = opts.journal || new NetworkJournal();
     // 🛑 FIX : UA FIXE pour toute la durée de l'enrichissement. Avant,
     // getRandomUserAgent() était appelé dans createStealthContext → UA différent
     // à chaque recyclage de contexte (tous les 200 produits). Le UA choisi ici
@@ -490,7 +495,7 @@ class DescriptionEnricher {
     this.cancelled = false;
     this._onSigint = () => {
       this.cancelled = true;
-      this.shouldStopAll = true;
+      this.circuit.state = 'stopped';
       this.logger.warn('⏹️ SIGINT reçu — arrêt de l\'enrichissement, sauvegarde des données partielles.');
     };
     process.once('SIGINT', this._onSigint);
@@ -637,13 +642,14 @@ class DescriptionEnricher {
     const browser = await chromium.launch({ headless: this.opts.headless });
     this.logger.debug(`[DescriptionEnricher] Chromium lancé en ${formatMs(Date.now() - t0Launch)}.`);
 
-    const parentDir = path.dirname(this.opts.outDir);
-    const statePath = path.join(parentDir, 'session-state.json');
-    // outDir = JOBS_DIR/job-<timestamp>/results → parentDir = jobDir
-    // La session globale est dans BASE_OUT_DIR/global-session.json, soit 2 niveaux
-    // au-dessus de outDir (parentDir = jobDir, path.dirname(parentDir) = JOBS_DIR,
-    // path.dirname(path.dirname(parentDir)) = BASE_OUT_DIR).
-    const globalStatePath = path.join(path.dirname(path.dirname(parentDir)), 'global-session.json');
+    // Résolution de session centralisée (sessionPaths.js) : la session globale
+    // (BASE_OUT_DIR/global-session.json) est prioritaire, sinon la session locale
+    // du job (<jobDir>/session-state.json). Le chemin global est transmis par le
+    // main process via --base-out-dir (le pipeline forké n'a pas accès à electron).
+    const jobDir = path.dirname(this.opts.outDir); // outDir = <jobDir>/results
+    const statePath = getJobSessionPathFromResults(this.opts.outDir);
+    const baseOutDir = this.opts.baseOutDir || path.dirname(path.dirname(jobDir));
+    const globalStatePath = getGlobalSessionPath(baseOutDir);
 
     const createStealthContext = async () => {
       const contextOptions = {
@@ -696,8 +702,8 @@ class DescriptionEnricher {
     let batchIndex = 0;
 
     for (let i = 0; i < targets.length; i += concurrency) {
-      if (this.shouldStopAll || this.cancelled) {
-        this.logger.debug(`[DescriptionEnricher] Arrêt demandé (shouldStopAll=${this.shouldStopAll}, cancelled=${this.cancelled}) — sortie de la boucle à ${done}/${targets.length}.`);
+      if (this.circuit.shouldStop() || this.cancelled) {
+        this.logger.debug(`[DescriptionEnricher] Arrêt demandé (circuit=${this.circuit.state}, cancelled=${this.cancelled}) — sortie de la boucle à ${done}/${targets.length}.`);
         break;
       }
 
@@ -729,11 +735,13 @@ class DescriptionEnricher {
             const text = String(parsed.description);
             ad.description = text;
             successCount++;
-            this.consecutiveBlocks = 0;
+            this.circuit.recordSuccess();
+            this.journal.recordDetailRequest();
             this.logger.info(`✅ [${done}/${targets.length}] ${(ad.title || '').slice(0, 50)}`);
           } else if (enriched) {
             successCount++;
-            this.consecutiveBlocks = 0;
+            this.circuit.recordSuccess();
+            this.journal.recordDetailRequest();
             this.logger.info(`✅ [${done}/${targets.length}] ${(ad.title || '').slice(0, 50)} (attributs enrichis, description absente)`);
           } else {
             notFoundCount++;
@@ -742,28 +750,34 @@ class DescriptionEnricher {
           }
         } else if (res && res.error === 'BLOCKED_403') {
           blockedCount++;
-          this.consecutiveBlocks++;
-          const blockCode = res.error === 'BLOCKED_403' ? ErrorCodes.HTTP_403 : ErrorCodes.HTTP_429;
-          const blockErr = createError(blockCode, `Bloqué (HTTP 403/429) sur ${ad.id} — ${truncate(ad.url, 60)}`, { adId: ad.id, url: ad.url });
-          this.logger.warn(`🛑 [${done}/${targets.length}] [${blockErr.code}] Bloqué (HTTP 403/429) sur ${ad.id} — ${truncate(ad.url, 60)}`);
-          if (this.consecutiveBlocks >= 3) {
-            this.shouldStopAll = true;
+          this.journal.recordBlock(ad.url, 403);
+          const blockCode = ErrorCodes.HTTP_403;
+          const blockErr = createError(blockCode, `Bloqué (HTTP 403) sur ${ad.id} — ${truncate(ad.url, 60)}`, { adId: ad.id, url: ad.url });
+          this.logger.warn(`🛑 [${done}/${targets.length}] [${blockErr.code}] Bloqué (HTTP 403) sur ${ad.id} — ${truncate(ad.url, 60)}`);
+          const mustStop = this.circuit.recordBlock(403, blockCode);
+          if (mustStop) {
             this.logger.warn('\n🛑 Blocage détecté. Arrêt préventif.');
-            this.logger.debug(`[DescriptionEnricher] Raison arrêt : ${this.consecutiveBlocks} blocages consécutifs (seuil=3). ${blockedCount} blocages au total sur ce batch.`);
+            this.logger.debug(`[DescriptionEnricher] Raison arrêt : ${this.circuit.consecutiveBlocks} blocages consécutifs (seuil=${this.circuit.blockThreshold}). ${blockedCount} blocages au total.`);
             break;
           }
         } else if (res && res.error && res.error.startsWith('HTTP_')) {
           httpErrorCount++;
+          this.circuit.recordError();
+          this.journal.recordError();
           const httpStatus = parseInt(res.error.replace('HTTP_', ''), 10);
           const httpCode = httpStatus === 404 ? ErrorCodes.HTTP_404 : httpStatus >= 500 ? ErrorCodes.HTTP_500 : ErrorCodes.HTTP_UNKNOWN;
           const httpErr = createError(httpCode, `HTTP ${httpStatus} sur ${ad.id}`, { adId: ad.id, httpStatus });
           this.logger.warn(`⚠️ [${done}/${targets.length}] [${httpErr.code}] HTTP ${httpStatus} sur ${ad.id}`);
         } else if (res && res.error) {
           httpErrorCount++;
+          this.circuit.recordError();
+          this.journal.recordError();
           const fetchErr = createError(ErrorCodes.NET_CONNECTION_FAILED, `Erreur fetch sur ${ad.id} : ${res.error}`, { adId: ad.id, error: res.error });
           this.logger.warn(`⚠️ [${done}/${targets.length}] [${fetchErr.code}] Erreur fetch sur ${ad.id} : ${res.error}`);
         } else {
           httpErrorCount++;
+          this.circuit.recordError();
+          this.journal.recordError();
           this.logger.warn(`⚠️ [${done}/${targets.length}] Aucune réponse reçue pour ${ad.id}`);
         }
       }
@@ -815,7 +829,16 @@ class DescriptionEnricher {
 
     writeOutputs(ads);
     this.logger.info(`Session terminée : ${successCount}/${targets.length} récupérées.`);
-    this.logger.debug(`[DescriptionEnricher] Bilan final : ${successCount} réussies | ${notFoundCount} sans description trouvée | ${blockedCount} bloquées (403/429) | ${httpErrorCount} autres erreurs HTTP/fetch | arrêt préventif : ${this.shouldStopAll ? 'OUI' : 'non'}.`);
+    const stop = this.circuit.stopInfo();
+    this.logger.debug(`[DescriptionEnricher] Bilan final : ${successCount} réussies | ${notFoundCount} sans description trouvée | ${blockedCount} bloquées (403/429) | ${httpErrorCount} autres erreurs HTTP/fetch | circuit=${this.circuit.state}${stop ? ` (raison=${stop.reason}, HTTP ${stop.status || '?'})` : ''}.`);
+    // Signal d'arrêt STRUCTURÉ (machine-lisible) : permet au main process de
+    // rapporter un succès partiel SANS heuristique de texte fragile. Format
+    // stable : « [STOP_REASON] code=... status=... reason=... ».
+    if (stop) {
+      const code = stop.code || (stop.status === 429 ? 'HTTP_429' : 'HTTP_403');
+      this.logger.warn(`[STOP_REASON] code=${code} status=${stop.status || ''} reason=${stop.reason} consecutiveBlocks=${stop.consecutiveBlocks}`);
+    }
+    return { circuit: this.circuit.snapshot(), stopInfo: stop };
     } finally {
       process.removeListener('SIGINT', this._onSigint);
       // Garanti la fermeture du navigateur/contexte/page même en cas d'erreur
@@ -938,14 +961,9 @@ async function main() {
   }
 
   // Preset de vitesse : ajuste concurrence et délais selon le choix utilisateur.
-  // La concurrence est le nombre de workers persistants qui traitent les annonces
-  // en parallèle (queue dynamique : dès qu'un worker termine, il prend la suivante).
-  const SPEED_PRESETS = {
-    moyen:          { concurrency: 10, minDelayMs: 500,  maxDelayMs: 1000, mode: 'parallèle' },
-    rapide:         { concurrency: 15, minDelayMs: 200,  maxDelayMs: 600,  mode: 'parallèle' },
-    'ultra-rapide': { concurrency: 25, minDelayMs: 50,   maxDelayMs: 300,  mode: 'parallèle' },
-  };
-  const preset = SPEED_PRESETS[opts.speed] || SPEED_PRESETS.moyen;
+  // Les presets sont centralisés dans config/scraping.js (source unique partagée
+  // avec le main process) — évite les désynchronisations de seuils.
+  const preset = getSpeedPreset(opts.speed);
   opts.concurrency = preset.concurrency;
   opts.minDelayMs = preset.minDelayMs;
   opts.maxDelayMs = preset.maxDelayMs;
@@ -958,6 +976,34 @@ async function main() {
     warn: (msg) => console.log(`\x1b[33m[${ts()}] [WARN] ${msg}\x1b[0m`),
     error: (msg) => console.log(`\x1b[31m[${ts()}] [ERROR] ${msg}\x1b[0m`),
   };
+
+  // Journal réseau structuré (compteurs objectifs pour report.json) + rapport
+  // de job (durées par phase, compteurs, codes d'erreur, pages réussies/échouées).
+  const journal = new NetworkJournal();
+  const t0Main = Date.now();
+  const report = {
+    schemaVersion: 1,
+    generatedAt: null,
+    harPath: opts.harPath,
+    outDir: opts.outDir,
+    speed: opts.speed || 'moyen',
+    profileId: opts.profileId || 'default',
+    phases: {},
+    counts: {},
+    circuit: null,
+    circuitStop: null,
+    journal: null,
+    exitCode: 0,
+  };
+  function writeReport() {
+    report.generatedAt = new Date().toISOString();
+    report.journal = journal.snapshot();
+    try {
+      writeWithChecksum(path.join(opts.outDir, 'report.json'), report, null, 2);
+    } catch (e) {
+      logger.warn(`[main] Écriture report.json échouée : ${e.message}`);
+    }
+  }
 
   logger.info(`=== Pipeline Leboncoin (Vitesse: ${opts.speed || 'moyen'} — ${preset.mode}, concurrency=${preset.concurrency}) ===`);
   logger.debug(`[main] Options : harPath=${opts.harPath} | outDir=${opts.outDir} | headless=${opts.headless}  noDesc=${opts.noDesc} | limit=${opts.limit ?? '(aucun)'} | fresh=${opts.fresh} | speed=${opts.speed || 'moyen'} | concurrency=${opts.concurrency} | minDelay=${opts.minDelayMs} | maxDelay=${opts.maxDelayMs} | profileId=${opts.profileId || 'default'} | profileFields=${opts.profileFields ? `[${opts.profileFields.join(', ')}]` : '(selon profil)'} | includeSellerData=${opts.includeSellerData}`);
@@ -992,6 +1038,10 @@ async function main() {
       // 0 (succès) et 1 (erreur fatale) pour que PipelineRunner ne présente PAS
       // un run vide comme un succès complet.
       process.exitCode = 2;
+      report.exitCode = 2;
+      report.counts = { harEntries: entries.length, jsonResponses: 0, rawAds: 0, normalized: 0, unique: 0 };
+      report.phases = { parseMs: Date.now() - t0Main };
+      writeReport();
       return;
     }
 
@@ -1029,6 +1079,10 @@ async function main() {
       logger.warn(`[main] Récapitulatif diagnostic : ${entries.length} entrées HAR | ${jsonResponses.length} JSON parsés | ${rawAds.length} annonces brutes | ${normalized.length} après normalisation | 0 après déduplication.`);
       logger.warn(`[main] Causes probables : page de recherche non chargée, réponse réseau absente, données reçues mais ne contenant pas d'annonces, ou filtre ayant tout supprimé.`);
       process.exitCode = 2;
+      report.exitCode = 2;
+      report.counts = { harEntries: entries.length, jsonResponses: jsonResponses.length, rawAds: rawAds.length, normalized: normalized.length, unique: 0 };
+      report.phases = { parseMs: Date.now() - t0Main };
+      writeReport();
       return;
     }
 
@@ -1053,13 +1107,34 @@ async function main() {
 
   if (!opts.noDesc) {
     logger.debug(`[main] Lancement de l'enrichissement des descriptions...`);
-    const enricher = new DescriptionEnricher(opts, logger);
-    await enricher.enrichAll(ads, writeOutputs);
+    const t0Enrich = Date.now();
+    // Le journal réseau est partagé avec l'enrichisseur (requêtes de détail).
+    const enricher = new DescriptionEnricher({ ...opts, journal }, logger);
+    const enrichResult = await enricher.enrichAll(ads, writeOutputs);
+    report.phases.enrichMs = Date.now() - t0Enrich;
+    if (enrichResult) {
+      report.circuit = enrichResult.circuit;
+      report.circuitStop = enrichResult.stopInfo;
+      // Code de sortie STRUCTURÉ : 3 = accès refusé (403), 4 = débit limité
+      // (429). Le PipelineRunner les classe déjà (HTTP_ACCESS_REFUSED /
+      // HTTP_RATE_LIMITED) → le main process peut rapporter un succès partiel
+      // honnête sans heuristique de texte.
+      if (enrichResult.stopInfo) {
+        process.exitCode = enrichResult.stopInfo.status === 429 ? 4 : 3;
+      }
+    }
   } else {
     logger.debug(`[main] Enrichissement des descriptions ignoré (option --no-desc).`);
   }
 
   writeOutputs(ads);
+  report.counts = {
+    ...(report.counts || {}),
+    ads: ads.length,
+    descriptions: ads.filter((a) => a.description).length,
+  };
+  report.exitCode = process.exitCode || 0;
+  writeReport();
   logger.info('\n✅ Opération terminée avec succès.');
   logger.debug(`[main] Bilan final : ${summarizeAds(ads)}`);
 }
