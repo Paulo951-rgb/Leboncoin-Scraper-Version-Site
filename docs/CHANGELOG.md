@@ -3,6 +3,40 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Extraction des données manquantes (vendeur, détail, fusion) — 2026-10-11
+
+### Corrigé
+
+- **Enrichissement sauté quand la recherche fournit une description** :
+  `DescriptionEnricher.enrichAll` (`leboncoin-pipeline.js`) ne ciblait que
+  `a.url && !a.description`. Or la réponse de recherche Leboncoin contient
+  souvent déjà un `body` : dès qu'une annonce avait une description, sa page de
+  détail n'était **jamais** visitée → les données présentes uniquement sur le
+  détail (note vendeur, nombre d'avis, ancienneté, URL de profil, état, mode de
+  remise) restaient `null`. La cible inclut désormais les annonces dont un champ
+  de détail est manquant.
+- **`parseHtmlDescription` ne remontait que la note** : la page de détail
+  expose `owner.nb_ratings`, `owner.profile_url`, `owner.member_since`, etc.
+  Seule `note` était extraite et recopiée → `nombreAvis`, `vendeurUrlProfil` et
+  `vendeurAncienneteJours` étaient perdus même quand la donnée existait. Toutes
+  les données vendeur du détail sont maintenant extraites et fusionnées via
+  `applyDetailFields` (fonction pure, sans écrasement d'une valeur déjà remplie).
+- **`deliveryType` périmé après fusion** : `mergeKeepingNonNull` fusionnait
+  `livraison` et `mainPropre` de deux occurrences sans recalculer l'unifié
+  (ex. `livraison=true` d'une liste + `mainPropre=true` d'un détail donnaient
+  `deliveryType: 'main_propre'` au lieu de `les_deux`). `deliveryType` est
+  désormais recalculé dès que l'un des deux booléens est présent.
+- **Variantes de champs vendeur non couvertes** : `extractSeller` (`adFields.js`)
+  ne cherchait que quelques noms. Ajout des variantes observées/historiques pour
+  le nombre d'avis (`nb_reviews`, `reviews_count`, `total_ratings`,
+  `feedback_count`, …), l'URL de profil (`web_url`, `shop_url`, `profile`,
+  `href`, …), la date de création du compte (`creation_date`,
+  `account_creation_date`, `inscription_date`, `since_date`, `created_at`) et le
+  nom (`seller_name`, `store_name`).
+- **Photos dupliquées** : `extractPhotos` conserve l'ordre mais déduplique les
+  URL répétées (une même image ne gonfle plus `photosCount` ni la galerie).
+  Aucune URL unique n'est tronquée.
+
 ## [Non publié] — Chasse aux bugs : 6 correctifs vérifiés — 2026-10-11
 
 ### Corrigé

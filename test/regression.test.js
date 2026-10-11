@@ -2937,6 +2937,10 @@ console.log('\n[36] Fixtures HAR (résultats, doublons, 403, page vide, détail)
     `fixtures: page détail → état déclaré extrait, obtenu ${JSON.stringify(parsed.etat)}`);
   assert(parsed.livraison === true && parsed.note === 4.5,
     'fixtures: page détail → livraison + note vendeur enrichies');
+  assert(parsed.nombreAvis === 12 && parsed.urlProfil === 'https://www.leboncoin.fr/profil/111',
+    'fixtures: page détail → nombre d\'avis + URL profil extraits (auparavant perdus)');
+  assert(typeof parsed.ancienneteJours === 'number' && parsed.ancienneteJours > 0,
+    'fixtures: page détail → ancienneté vendeur calculée');
 
   // 36.6 Page de détail sans __NEXT_DATA__ → enrichissement vide SANS crash.
   const noNext = fs.readFileSync(path.join(fixturesDir, 'detail-page-no-nextdata.html'), 'utf8');
@@ -3714,6 +3718,144 @@ console.log('\n[39] Bugs corrigés (fuite vendeur, fusion, widget, rétention HA
 }
 
 console.log('\n[39] OK');
+
+console.log('\n[40] Extraction des données manquantes (vendeur, détail, fusion, profils)');
+{
+  const adFields = require('../src/main/services/scraping/adFields');
+  const { parseHtmlDescription, applyDetailFields, mergeKeepingNonNull, normalizeAd } =
+    require('../src/main/services/scraping/leboncoin-pipeline');
+  const { filterAdByFields, ALL_FIELD_KEYS } = require('../src/main/services/exporting/exportFields');
+  const { getProfileFields } = require('../src/main/services/exporting/dataProfiles');
+
+  // Détail complet (__NEXT_DATA__) : toutes les données vendeur présentes.
+  const detailAd = {
+    list_id: 111, subject: 'Velo', price: [{ value: 100 }],
+    url: 'https://www.leboncoin.fr/ad/111.htm',
+    body: 'Description detaillee.',
+    attributes: [{ key: 'condition', value: 'Neuf' }],
+    has_option: { shipping: true },
+    owner: {
+      name: 'Vendeur Complet', type: 'pro', user_id: 'u1',
+      rating: 4.5, nb_ratings: 12, member_since: '2020-01-01T00:00:00Z',
+      profile_url: 'https://www.leboncoin.fr/profil/abc',
+    },
+  };
+  const detailHtml = '<html><head><script id="__NEXT_DATA__" type="application/json">'
+    + JSON.stringify({ props: { pageProps: { ad: detailAd } } }) + '</script></head><body></body></html>';
+
+  // 40.1 parseHtmlDescription expose TOUTES les données vendeur (pas seulement note).
+  const parsed = parseHtmlDescription(detailHtml, '111');
+  assert(parsed.description === 'Description detaillee.', '40: détail → description');
+  assert(parsed.note === 4.5, '40: détail → note vendeur');
+  assert(parsed.nombreAvis === 12, `40: détail → nombre d'avis (obtenu ${parsed.nombreAvis})`);
+  assert(parsed.urlProfil === 'https://www.leboncoin.fr/profil/abc', '40: détail → URL profil');
+  assert(typeof parsed.ancienneteJours === 'number' && parsed.ancienneteJours > 0,
+    `40: détail → ancienneté calculée en jours (obtenu ${parsed.ancienneteJours})`);
+  assert(parsed.vendeurNom === 'Vendeur Complet' && parsed.vendeurType === 'pro' && parsed.vendeurId === 'u1',
+    '40: détail → nom/type/id vendeur');
+  assert(parsed.etat === 'Neuf' && parsed.livraison === true,
+    '40: détail → état + mode de remise');
+
+  // 40.2 Annonce de recherche SANS données vendeur : le détail les complète,
+  // la description de recherche est PRÉSERVÉE (jamais écrasée).
+  const searchAd = {
+    id: '111', title: 'Velo', description: 'Description liste.', prix: 100,
+    vendeurNom: 'Vendeur Complet', vendeurType: 'pro', vendeurId: 'u1',
+    vendeurNote: null, nombreAvis: null, vendeurUrlProfil: null, vendeurAncienneteJours: null,
+    livraison: null, mainPropre: null, deliveryType: 'inconnu', etat: null,
+  };
+  const enriched = applyDetailFields(searchAd, parsed);
+  assert(enriched === true, '40: applyDetailFields signale un enrichissement');
+  assert(searchAd.nombreAvis === 12 && searchAd.vendeurUrlProfil === 'https://www.leboncoin.fr/profil/abc',
+    '40: détail complète nombre d\'avis + URL profil absents de la recherche');
+  assert(searchAd.vendeurAncienneteJours === parsed.ancienneteJours,
+    '40: détail complète l\'ancienneté vendeur');
+  assert(searchAd.vendeurNote === 4.5 && searchAd.etat === 'Neuf',
+    '40: détail complète note + état');
+  assert(searchAd.deliveryType === 'livraison',
+    `40: deliveryType recalculé après enrichissement (obtenu ${searchAd.deliveryType})`);
+  assert(searchAd.description === 'Description liste.',
+    '40: la description déjà présente n\'est PAS écrasée par celle du détail');
+
+  // 40.3 Fusion sans perte : une valeur absente du détail n'écrase pas l'existant.
+  const existing = { id: '1', vendeurNote: 3, nombreAvis: 5, description: 'garder', etat: null };
+  applyDetailFields(existing, { note: null, nombreAvis: null, description: null, etat: null, urlProfil: null });
+  assert(existing.vendeurNote === 3 && existing.nombreAvis === 5 && existing.description === 'garder',
+    '40: aucune valeur non-nulle écrasée par une valeur absente du détail');
+
+  // 40.4 mergeKeepingNonNull : deliveryType recalculé (les_deux) quand livraison
+  // vient d'une occurrence et main propre d'une autre.
+  const occA = { id: '1', livraison: true, mainPropre: null, deliveryType: 'livraison', raw: {} };
+  const occB = { id: '1', livraison: null, mainPropre: true, deliveryType: 'main_propre', raw: {} };
+  const merged = mergeKeepingNonNull(occA, occB);
+  assert(merged.livraison === true && merged.mainPropre === true && merged.deliveryType === 'les_deux',
+    `40: fusion → deliveryType recalculé les_deux (obtenu ${merged.deliveryType})`);
+
+  // 40.5 Objet vendeur incomplet : champs absents restent null, pas inventés.
+  const incomplete = adFields.extractSeller({ owner: { name: 'Paul' } });
+  assert(incomplete.nom === 'Paul' && incomplete.note === null && incomplete.nombreAvis === null
+    && incomplete.urlProfil === null && incomplete.ancienneteJours === null,
+    '40: vendeur incomplet → nom seul, le reste null (jamais inventé)');
+  assert(incomplete.id === null && incomplete.type === null, '40: vendeur incomplet → id/type null');
+
+  // 40.6 Variantes de champs réellement observées : nb d'avis, profil, date de compte.
+  const variants = adFields.extractSeller({
+    owner: {
+      name: 'X', user_id: 'u9', rating_average: 4.2, review_count: 7,
+      web_url: 'https://www.leboncoin.fr/p/9', registration_date: '2021-06-01T00:00:00Z',
+    },
+  });
+  assert(variants.note === 4.2, '40: note via owner.rating_average');
+  assert(variants.nombreAvis === 7, '40: nb avis via owner.review_count');
+  assert(variants.urlProfil === 'https://www.leboncoin.fr/p/9', '40: URL profil via owner.web_url');
+  assert(typeof variants.ancienneteJours === 'number' && variants.ancienneteJours > 0,
+    '40: ancienneté via owner.registration_date');
+
+  // 40.7 Champs numériques égaux à zéro : 0 ≠ null.
+  const zero = adFields.extractSeller({ owner: { name: 'Z', nb_ratings: 0 } });
+  assert(zero.nombreAvis === 0, '40: nombre d\'avis = 0 conservé (pas null)');
+  assert(adFields.extractLikes({ favorites_count: 0 }) === 0, '40: likes = 0 conservé (pas null)');
+  const phZero = adFields.extractPhotos({ images: { urls: [] } });
+  assert(phZero.count === 0 && phZero.urls.length === 0, '40: photos = 0 → count 0 (pas null)');
+
+  // 40.8 Annonce sans date de modification accessible → null (jamais confondue
+  // avec la date de publication).
+  const dates = adFields.extractDates({ first_publication_date: '2024-05-01T00:00:00Z' });
+  assert(dates.publication === '2024-05-01T00:00:00Z' && dates.modification === null,
+    '40: dateModification null si absente (pas = datePublication)');
+
+  // 40.9 Photos : déduplication sans perte, toutes les URL uniques conservées.
+  const ph = adFields.extractPhotos({ images: { urls: ['https://a.jpg', 'https://b.jpg', 'https://a.jpg'] } });
+  assert(ph.count === 2 && ph.urls.length === 2 && ph.urls[0] === 'https://a.jpg' && ph.urls[1] === 'https://b.jpg',
+    '40: photos dédupliquées, ordre conservé, aucune troncature');
+
+  // 40.10 description toujours une string (jamais objet) via normalizeAd.
+  const norm = normalizeAd({ list_id: 1, subject: 'T', price: [{ value: 5 }], body: { text: 'Corps' } });
+  assert(norm.description === 'Corps' && typeof norm.description === 'string',
+    '40: description objet {text} → string');
+  assert(norm.id === '1' && norm.prix === 5 && norm.url === 'https://www.leboncoin.fr/ad/1.htm',
+    '40: id/titre/prix/url jamais perdus par la normalisation');
+
+  // 40.11 Compatibilité des profils Défaut / Maximum / Personnalisé.
+  const fullAd = normalizeAd(detailAd);
+  const defaultFields = getProfileFields('default');
+  const maxFields = getProfileFields('maximum');
+  const customFields = getProfileFields('custom', ['id', 'vendeurNote', 'vendeurNbAvis']);
+  const defOut = filterAdByFields(fullAd, defaultFields);
+  const maxOut = filterAdByFields(fullAd, maxFields);
+  const custOut = filterAdByFields(fullAd, customFields);
+  assert('title' in defOut && 'prix' in defOut && 'vendeurNom' in defOut,
+    '40: profil Défaut conserve les champs essentiels');
+  assert(maxOut.nombreAvis === 12 && maxOut.vendeurUrlProfil === 'https://www.leboncoin.fr/profil/abc',
+    '40: profil Maximum expose les nouvelles données vendeur');
+  assert(maxFields.length === ALL_FIELD_KEYS.length && ALL_FIELD_KEYS.includes('vendeurAnciennete'),
+    '40: profil Maximum = toutes les clés d\'export (dont vendeurAnciennete)');
+  assert(custOut.id === '111' && custOut.vendeurNote === 4.5 && custOut.vendeurNbAvis === 12
+    && !('title' in custOut),
+    '40: profil Personnalisé → uniquement les champs choisis (vendeurNbAvis traduit depuis nombreAvis)');
+}
+
+console.log('\n[40] OK');
 
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);

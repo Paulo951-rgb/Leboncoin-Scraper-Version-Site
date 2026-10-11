@@ -323,6 +323,23 @@ Sans Wine, `-c.win.signAndEditExecutable=false` permet de produire `dist/win-unp
 (dossier app lançable) mais PAS l'installeur ni le portable.
 
 ## Pièges corrigés (à ne PAS réintroduire)
+- **Enrichissement des descriptions** : `DescriptionEnricher.enrichAll` DOIT
+  cibler aussi les annonces qui ont déjà une description mais dont un champ de
+  détail est manquant (`vendeurNote`, `nombreAvis`, `vendeurUrlProfil`,
+  `vendeurAncienneteJours`, `etat`, `livraison`, `mainPropre`). Revenir à
+  `a.url && !a.description` saute l'enrichissement dès que la recherche fournit
+  un `body` → données vendeur/état/mode de remise uniquement présentes sur la
+  page de détail restent `null`.
+- **Données de détail** : `parseHtmlDescription` DOIT remonter TOUTES les données
+  vendeur du détail (`nombreAvis`, `urlProfil`, `ancienneteJours`, `vendeurNom`,
+  `vendeurType`, `vendeurId`), pas seulement `note`. La fusion vers l'annonce
+  passe par `applyDetailFields` (fonction pure) qui n'écrase JAMAIS une valeur
+  déjà non-nulle et recalcule `deliveryType` dès qu'un booléen de transaction est
+  touché.
+- **Fusion de doublons** : `mergeKeepingNonNull` DOIT recalculer `deliveryType`
+  après fusion de `livraison`/`mainPropre` (deux occurrences peuvent chacune
+  fournir un booléen → un unifié périmé affichait `livraison`/`main_propre` au
+  lieu de `les_deux`).
 - **Navigation onglets** : `app.js` DOIT cibler `[data-tab]` (pas l'ancienne
   classe `.tab-btn`) pour attacher les écouteurs de navigation. La sidebar
   utilise `.nav-item`. Un sélecteur désaligné = onglets totalement morts

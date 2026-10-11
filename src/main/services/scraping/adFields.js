@@ -202,7 +202,18 @@ function extractPhotos(raw, opts = {}) {
     // images est un objet mais sans urls array → structure potentiellement changée.
     onError({ code: 'EXTRACTOR_PHOTOS_FAILED', message: 'Champ images présent mais structure inattendue (ni array ni {urls:[]})' });
   }
-  return { count: urls.length, urls };
+  // Déduplication en conservant l'ordre : une même URL répétée dans la réponse
+  // ne doit pas gonfler photosCount ni dupliquer la galerie. Toutes les URL
+  // uniques réellement fournies sont conservées (aucune troncature).
+  const seen = new Set();
+  const unique = [];
+  for (const u of urls) {
+    const key = u.trim();
+    if (seen.has(key)) continue;
+    seen.add(key);
+    unique.push(u);
+  }
+  return { count: unique.length, urls: unique };
 }
 
 /**
@@ -221,6 +232,8 @@ function extractSeller(raw, opts = {}) {
     typeof seller.name === 'string' ? seller.name : null,
     typeof store.name === 'string' ? store.name : null,
     raw?.owner_name,
+    raw?.seller_name,
+    typeof raw?.store_name === 'string' ? raw.store_name : null,
     null
   );
   // Si owner existe mais sans name ni store_name → possible changement de structure.
@@ -228,7 +241,7 @@ function extractSeller(raw, opts = {}) {
     onError({ code: 'EXTRACTOR_SELLER_NAME_FAILED', message: 'Champ owner.name absent alors que owner existe' });
   }
 
-  const id = firstNonNull(owner.user_id, owner.id, seller.id, store.id, raw?.user_id, null);
+  const id = firstNonNull(owner.user_id, owner.id, seller.id, store.id, raw?.user_id, raw?.owner_id, null);
   // Si owner existe avec un user_id attendu mais absent → possible changement de structure.
   if (!id && raw?.owner && typeof raw.owner === 'object' && !raw.owner.user_id && !raw.owner.id) {
     onError({ code: 'EXTRACTOR_SELLER_ID_FAILED', message: 'Champ owner.user_id absent alors que owner existe' });
@@ -254,16 +267,42 @@ function extractSeller(raw, opts = {}) {
   }
 
   let nombreAvis = null;
-  const countVal = firstNonNull(owner.nb_ratings, owner.ratings_count, owner.rating_count, owner.nbReviews, owner.review_count, seller.nb_ratings, raw?.seller_rating_count, raw?.nb_ratings, null);
+  const countVal = firstNonNull(
+    owner.nb_ratings, owner.ratings_count, owner.rating_count, owner.nbReviews, owner.review_count, owner.nb_reviews,
+    owner.reviews_count, owner.total_ratings, owner.feedback_count,
+    seller.nb_ratings, seller.ratings_count, seller.nb_reviews, seller.review_count,
+    raw?.seller_rating_count, raw?.nb_ratings, raw?.nb_reviews, raw?.review_count, raw?.ratings_count,
+    null
+  );
   if (countVal !== null) {
     const c = parseInt(countVal, 10);
     if (!Number.isNaN(c) && c >= 0) nombreAvis = c;
   }
 
-  const urlProfil = firstNonNull(owner.profile_url, owner.url, seller.url, store.url, null);
+  // URL du profil vendeur. Leboncoin expose plusieurs variantes selon la
+  // source (liste vs page de détail) : owner.profile_url, owner.url, seller.url,
+  // store.url, owner.web_url, owner.shop_url, owner.profile, owner.href.
+  const urlProfil = firstNonNull(
+    owner.profile_url, owner.web_url, owner.shop_url, owner.url, owner.profile, owner.href,
+    seller.profile_url, seller.url, seller.href,
+    store.profile_url, store.url, store.href,
+    raw?.owner_url, raw?.profile_url, raw?.seller_url,
+    null
+  );
 
+  // Ancienneté du compte vendeur. On cherche une date de création/inscription
+  // réellement exposée par Leboncoin (owner.member_since / registration_date /
+  // since / creation_date / account_creation_date / inscription_date / since_date).
+  // Aucune URL de profil n'est fabriquée et aucune date n'est inventée : si la
+  // donnée est absente, on conserve null.
   let ancienneteJours = null;
-  const memberSince = firstNonNull(owner.member_since, owner.registration_date, owner.since, seller.member_since, raw?.member_since, null);
+  const memberSince = firstNonNull(
+    owner.member_since, owner.registration_date, owner.since, owner.creation_date,
+    owner.account_creation_date, owner.inscription_date, owner.since_date, owner.created_at,
+    seller.member_since, seller.registration_date, seller.since, seller.creation_date,
+    raw?.member_since, raw?.registration_date, raw?.since, raw?.account_creation_date,
+    null
+  );
   if (memberSince) {
     const d = new Date(memberSince);
     if (!Number.isNaN(d.getTime())) {
