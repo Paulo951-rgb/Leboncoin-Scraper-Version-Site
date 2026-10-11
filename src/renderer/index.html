@@ -224,6 +224,20 @@
             <div id="progressBar" class="progress-bar" style="width: 0%;"></div>
           </div>
         </div>
+
+        <!-- BANDEAU D'ERREUR ACTIONNABLE (Thème 5) : affiché sur refus 403/429,
+             erreur fatale ou succès partiel, avec accès direct aux logs. -->
+        <div id="scrapeErrorBanner" class="scrape-error-banner hidden" role="alert">
+          <span id="scrapeErrorIcon" class="scrape-error-icon">⚠️</span>
+          <div class="scrape-error-body">
+            <strong id="scrapeErrorTitle">Problème détecté</strong>
+            <p id="scrapeErrorMessage" class="scrape-error-msg"></p>
+          </div>
+          <div class="scrape-error-actions">
+            <button id="scrapeErrorLogsBtn" class="btn btn-small btn-secondary" type="button">Voir les logs</button>
+            <button id="scrapeErrorCloseBtn" class="btn-close" type="button" title="Fermer">&times;</button>
+          </div>
+        </div>
       </section>
 
       <!-- PAGE LOGS -->
@@ -785,6 +799,21 @@
       </div>
     </div>
   </div>
+
+  <!-- MODAL CONFIRMATION GÉNÉRIQUE (Thème 5) — remplace window.confirm() -->
+  <div id="askModal" class="modal-overlay hidden">
+    <div class="modal-card" style="max-width:440px;">
+      <h3 id="askModalTitle">Confirmation</h3>
+      <p id="askModalMessage"></p>
+      <div class="modal-actions">
+        <button id="askModalCancelBtn" class="btn btn-secondary" type="button">Annuler</button>
+        <button id="askModalConfirmBtn" class="btn btn-primary" type="button">Confirmer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTENEUR DE NOTIFICATIONS (toasts) — remplace les alert() natifs (Thème 5) -->
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
 
   <script src="helpModule.js"></script>
   <script src="appState.js"></script>

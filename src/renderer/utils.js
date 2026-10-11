@@ -36,15 +36,116 @@ window.openUrl = (urlStr) => {
   if (urlStr) window.api.openExternal(urlStr);
 };
 
+// ─── Notifications (toasts) ────────────────────────────────────────────────
+// Remplace les alert() natifs (bloquants, non stylables, hors charte). Le
+// conteneur #toastContainer est déclaré dans index.html ; si absent (tests,
+// contexte dégradé) on retombe silencieusement sur la console pour ne jamais
+// jeter. Chaque toast est un élément DOM créé via createElement (pas de
+// innerHTML) → le texte fourni ne peut pas injecter de HTML.
+const TOAST_ICONS = { info: 'ℹ️', success: '✅', warn: '⚠️', error: '❌' };
+function showToast(message, type = 'info', opts = {}) {
+  const text = String(message == null ? '' : message);
+  const container = document.getElementById('toastContainer');
+  if (!container) { console.log(`[toast:${type}] ${text}`); return null; }
+  const duration = Number.isFinite(opts.duration) ? opts.duration : 4000;
+
+  const toast = document.createElement('div');
+  toast.className = `toast toast-${type}`;
+  toast.setAttribute('role', type === 'error' || type === 'warn' ? 'alert' : 'status');
+
+  const icon = document.createElement('span');
+  icon.className = 'toast-icon';
+  icon.textContent = TOAST_ICONS[type] || TOAST_ICONS.info;
+
+  const body = document.createElement('span');
+  body.className = 'toast-msg';
+  body.textContent = text;
+
+  const close = document.createElement('button');
+  close.className = 'toast-close';
+  close.type = 'button';
+  close.setAttribute('aria-label', 'Fermer');
+  close.textContent = '×';
+
+  const remove = () => {
+    toast.classList.add('toast-hide');
+    setTimeout(() => { try { toast.remove(); } catch { /* déjà retiré */ } }, 200);
+  };
+  close.addEventListener('click', remove);
+
+  toast.appendChild(icon);
+  toast.appendChild(body);
+  toast.appendChild(close);
+  container.appendChild(toast);
+  if (duration > 0) setTimeout(remove, duration);
+  return toast;
+}
+window.showToast = showToast;
+
+// ─── Bandeau d'erreur actionnable (onglet Scraper) ──────────────────────────
+// Affiche un message d'erreur/succès partiel persistant avec accès direct aux
+// logs, au lieu d'un alert() transitoire qui disparaît sans trace.
+function showScrapeError({ title, message, type = 'error' } = {}) {
+  const banner = document.getElementById('scrapeErrorBanner');
+  if (!banner) { showToast(message, type); return; }
+  const titleEl = document.getElementById('scrapeErrorTitle');
+  const msgEl = document.getElementById('scrapeErrorMessage');
+  const iconEl = document.getElementById('scrapeErrorIcon');
+  if (titleEl) titleEl.textContent = title || 'Problème détecté';
+  if (msgEl) msgEl.textContent = message || '';
+  if (iconEl) iconEl.textContent = type === 'warn' ? '⚠️' : type === 'success' ? '✅' : '❌';
+  banner.classList.remove('hidden');
+  banner.classList.toggle('scrape-error-banner--warn', type === 'warn');
+}
+window.showScrapeError = showScrapeError;
+
+function hideScrapeError() {
+  const banner = document.getElementById('scrapeErrorBanner');
+  if (banner) banner.classList.add('hidden');
+}
+window.hideScrapeError = hideScrapeError;
+
+// ─── Confirmation asynchrone (modal maison) ─────────────────────────────────
+// Remplace window.confirm() : non stylable, bloquant le thread, et sans
+// contexte visuel. Renvoie une promesse<bool>. Repli sur confirm() natif si la
+// modal est absente (tests, contexte dégradé).
+function askConfirm({ title = 'Confirmation', message = '', confirmLabel = 'Confirmer' } = {}) {
+  const modal = document.getElementById('askModal');
+  if (!modal) return Promise.resolve(window.confirm(message || title));
+  const titleEl = document.getElementById('askModalTitle');
+  const msgEl = document.getElementById('askModalMessage');
+  const okBtn = document.getElementById('askModalConfirmBtn');
+  const cancelBtn = document.getElementById('askModalCancelBtn');
+  if (titleEl) titleEl.textContent = title;
+  if (msgEl) msgEl.textContent = message;
+  if (okBtn) okBtn.textContent = confirmLabel;
+
+  modal.classList.remove('hidden');
+
+  return new Promise((resolve) => {
+    const cleanup = (result) => {
+      modal.classList.add('hidden');
+      okBtn?.removeEventListener('click', onOk);
+      cancelBtn?.removeEventListener('click', onCancel);
+      resolve(result);
+    };
+    const onOk = () => cleanup(true);
+    const onCancel = () => cleanup(false);
+    okBtn?.addEventListener('click', onOk);
+    cancelBtn?.addEventListener('click', onCancel);
+  });
+}
+window.askConfirm = askConfirm;
+
 window.openFolder = async (folderPath) => {
   if (!folderPath) return;
   try {
     const res = await window.api.openFolder(folderPath);
     if (res && res.success === false) {
-      alert('Impossible d\'ouvrir le dossier : ' + (res.error || 'erreur inconnue'));
+      showToast('Impossible d\'ouvrir le dossier : ' + (res.error || 'erreur inconnue'), 'error');
     }
   } catch (err) {
-    alert('Impossible d\'ouvrir le dossier : ' + (err.message || err));
+    showToast('Impossible d\'ouvrir le dossier : ' + (err.message || err), 'error');
   }
 };
 
@@ -53,9 +154,9 @@ window.openFile = async (filePath) => {
   try {
     const res = await window.api.openFile(filePath);
     if (res && res.success === false) {
-      alert('Impossible d\'ouvrir le fichier : ' + (res.error || 'erreur inconnue'));
+      showToast('Impossible d\'ouvrir le fichier : ' + (res.error || 'erreur inconnue'), 'error');
     }
   } catch (err) {
-    alert('Impossible d\'ouvrir le fichier : ' + (err.message || err));
+    showToast('Impossible d\'ouvrir le fichier : ' + (err.message || err), 'error');
   }
 };

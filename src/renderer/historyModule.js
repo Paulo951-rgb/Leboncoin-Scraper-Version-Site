@@ -91,9 +91,9 @@ openMainFolderBtn.addEventListener('click', async () => {
     // Ouvrir le dossier results/ (JOBS_DIR) qui contient les résultats du scraping
     const res = await window.api.openJobsFolder();
     if (res && res.success === false) {
-      alert('Impossible d\'ouvrir le dossier results : ' + (res.error || 'erreur inconnue'));
+      showToast('Impossible d\'ouvrir le dossier results : ' + (res.error || 'erreur inconnue'), 'error');
     }
   } catch (err) {
-    alert('Impossible d\'ouvrir le dossier results : ' + (err.message || err));
+    showToast('Impossible d\'ouvrir le dossier results : ' + (err.message || err), 'error');
   }
 });

@@ -3053,6 +3053,104 @@ console.log('\n[37] DOM jsdom (logsModule, utils)');
 
 console.log('\n[37] OK');
 
+// --- 37b. UX (Thème 5) : toasts, bandeau d'erreur, confirmation asynchrone ---
+console.log('\n[37b] UX jsdom (toasts, bandeau erreur, askConfirm)');
+{
+  const { JSDOM } = require('jsdom');
+  const repoRoot = path.join(__dirname, '..');
+  const utilsSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/utils.js'), 'utf8');
+
+  const html = `<!doctype html><html><body>
+    <div id="scrapeErrorBanner" class="hidden">
+      <span id="scrapeErrorIcon"></span>
+      <strong id="scrapeErrorTitle"></strong>
+      <p id="scrapeErrorMessage"></p>
+    </div>
+    <div id="askModal" class="modal-overlay hidden">
+      <h3 id="askModalTitle"></h3><p id="askModalMessage"></p>
+      <button id="askModalConfirmBtn"></button><button id="askModalCancelBtn"></button>
+    </div>
+    <div id="toastContainer"></div>
+  </body></html>`;
+  const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://app.local/' });
+  const { window } = dom;
+  window.api = { openExternal: () => {}, openFolder: async () => ({ success: true }), openFile: async () => ({ success: true }) };
+  window.eval(utilsSrc);
+
+  // 37b.1 Toast : ajout au conteneur + fermeture via le bouton ×.
+  const container = window.document.getElementById('toastContainer');
+  const toast = window.showToast('Bonjour', 'success');
+  assert(container.children.length === 1 && toast.classList.contains('toast-success'),
+    'ux: showToast ajoute un toast typé au conteneur');
+  assert(container.textContent.includes('Bonjour'), 'ux: toast contient le message');
+  toast.querySelector('.toast-close').click();
+  await new Promise((r) => setTimeout(r, 260));
+  assert(container.children.length === 0, 'ux: clic sur × retire le toast');
+
+  // 37b.2 Toast : pas d'injection HTML (texte rendu via textContent).
+  window.showToast('<img src=x onerror=alert(1)>', 'info');
+  assert(container.querySelector('img') === null, 'ux: showToast n\'injecte pas de HTML (textContent)');
+
+  // 37b.3 Bandeau d'erreur : titre + message + visibilité.
+  const banner = window.document.getElementById('scrapeErrorBanner');
+  window.showScrapeError({ type: 'error', title: 'Accès refusé', message: 'HTTP 403' });
+  assert(!banner.classList.contains('hidden'), 'ux: showScrapeError affiche le bandeau');
+  assert(window.document.getElementById('scrapeErrorTitle').textContent === 'Accès refusé',
+    'ux: bandeau titre correct');
+  assert(window.document.getElementById('scrapeErrorMessage').textContent === 'HTTP 403',
+    'ux: bandeau message correct');
+  window.showScrapeError({ type: 'warn', title: 'Partiel', message: 'incomplet' });
+  assert(banner.classList.contains('scrape-error-banner--warn'), 'ux: bandeau mode avertissement');
+  window.hideScrapeError();
+  assert(banner.classList.contains('hidden'), 'ux: hideScrapeError masque le bandeau');
+
+  // 37b.4 askConfirm : résolution true (Confirmer) / false (Annuler).
+  const pOk = window.askConfirm({ title: 't', message: 'm', confirmLabel: 'OK' });
+  assert(!window.document.getElementById('askModal').classList.contains('hidden'),
+    'ux: askConfirm ouvre la modal');
+  assert(window.document.getElementById('askModalConfirmBtn').textContent === 'OK',
+    'ux: askConfirm applique le libellé du bouton');
+  window.document.getElementById('askModalConfirmBtn').click();
+  assert((await pOk) === true, 'ux: askConfirm → true sur Confirmer');
+
+  const pCancel = window.askConfirm({ message: 'm2' });
+  window.document.getElementById('askModalCancelBtn').click();
+  assert((await pCancel) === false, 'ux: askConfirm → false sur Annuler');
+  assert(window.document.getElementById('askModal').classList.contains('hidden'),
+    'ux: askConfirm referme la modal après choix');
+
+  // 37b.5 Repli : sans conteneur, showToast n'jette pas (console).
+  const dom2 = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'https://app.local/' });
+  dom2.window.api = window.api;
+  dom2.window.eval(utilsSrc);
+  let threw = false;
+  try { dom2.window.showToast('x', 'info'); } catch { threw = true; }
+  assert(!threw, 'ux: showToast sans conteneur → pas d\'exception (repli console)');
+
+  dom.window.close(); dom2.window.close();
+
+  // 37b.6 Structure : index.html contient les nouveaux éléments ; plus aucun
+  // alert()/confirm() natif dans le renderer (remplacés par toast/askConfirm).
+  const indexHtml = fs.readFileSync(path.join(repoRoot, 'src/renderer/index.html'), 'utf8');
+  assert(/id="toastContainer"/.test(indexHtml), 'ux: index.html contient #toastContainer');
+  assert(/id="scrapeErrorBanner"/.test(indexHtml), 'ux: index.html contient #scrapeErrorBanner');
+  assert(/id="askModal"/.test(indexHtml), 'ux: index.html contient #askModal');
+  const rendererFilesUx = ['utils.js', 'scraperModule.js', 'historyModule.js', 'logsModule.js', 'explorerModule.js', 'statsModule.js', 'app.js'];
+  const uxCodeRaw = rendererFilesUx.map((f) => fs.readFileSync(path.join(repoRoot, 'src/renderer', f), 'utf8')).join('\n');
+  // On retire les commentaires ligne/bloc avant de chercher les appels natifs,
+  // sinon les mentions « alert() » dans les commentaires déclenchent un faux positif.
+  const uxCode = uxCodeRaw
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/[^\n]*/g, '$1');
+  assert(!/[^.\w]alert\(/.test(uxCode), 'ux: plus d\'alert() natif dans le renderer');
+  assert(!/[^.\w]confirm\(/.test(uxCode.replace(/window\.confirm/g, '')), 'ux: plus de confirm() natif (hors repli)');
+  assert(/showToast\s*\(/.test(uxCode), 'ux: showToast utilisé par les modules');
+  assert(/showScrapeError\s*\(/.test(fs.readFileSync(path.join(repoRoot, 'src/renderer/scraperModule.js'), 'utf8')),
+    'ux: scraperModule câble le bandeau d\'erreur');
+}
+
+console.log('\n[37b] OK');
+
 // --- 38. Modules main sous-couverts : settings, logger, fileManager,
 // storageCleaner, jobHistory, ipcHandlers (invocation réelle des handlers) ---
 console.log('\n[38] Modules main (settings, logger, fileManager, storageCleaner, jobHistory, ipcHandlers)');
