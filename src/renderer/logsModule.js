@@ -26,6 +26,15 @@ function _logLevelVisible(level) {
   return level !== 'debug';
 }
 
+// Compteur de lignes visibles maintenu de façon INCRÉMENTALE (Thème 7 perf).
+// Avant, chaque log entrant recalculait `_logBuffer.filter(_logLevelVisible)`
+// → O(n) par log, donc O(n²) sur une session de plusieurs milliers de lignes.
+let _visibleLogCount = 0;
+
+function _updateLogStats() {
+  if (logStats) logStats.textContent = `${_visibleLogCount} log(s) affiché(s) / ${_logBuffer.length} total`;
+}
+
 function _renderLogs() {
   // On reconstruit le DOM à partir du buffer filtré.
   // Pour les longues sessions, c'est plus rapide que d'ajouter ligne par ligne
@@ -42,14 +51,21 @@ function _renderLogs() {
   }
   logsConsole.innerHTML = '';
   logsConsole.appendChild(frag);
-  if (logStats) logStats.textContent = `${visibleCount} log(s) affiché(s) / ${_logBuffer.length} total`;
+  _visibleLogCount = visibleCount;
+  _updateLogStats();
   if (_autoScroll) logsConsole.scrollTop = logsConsole.scrollHeight;
 }
 
 window.api.onLog(({ level, message }) => {
-  _logBuffer.push({ level: level || 'info', message, time: new Date().toLocaleTimeString() });
-  // Plafond mémoire
-  while (_logBuffer.length > MAX_LOG_BUFFER) _logBuffer.shift();
+  const lvl = level || 'info';
+  _logBuffer.push({ level: lvl, message, time: new Date().toLocaleTimeString() });
+  // Plafond mémoire : on décrémente le compteur visible si la ligne évincée
+  // était visible dans le mode courant.
+  while (_logBuffer.length > MAX_LOG_BUFFER) {
+    const evicted = _logBuffer.shift();
+    if (_logLevelVisible(evicted.level)) _visibleLogCount--;
+  }
+  if (_logLevelVisible(lvl)) _visibleLogCount++;
 
   // Détection d'avertissement de changement de structure Leboncoin
   if (message && message.includes('detectStructureChanges') && level === 'warn') {
@@ -63,17 +79,14 @@ window.api.onLog(({ level, message }) => {
 
   // Si le log n'est pas visible dans le mode actuel, on ne touche pas au DOM
   // (optimisation : pas de re-render complet pour un log caché).
-  if (!_logLevelVisible(level)) {
-    if (logStats) {
-      const vis = _logBuffer.filter((e) => _logLevelVisible(e.level)).length;
-      logStats.textContent = `${vis} log(s) affiché(s) / ${_logBuffer.length} total`;
-    }
+  if (!_logLevelVisible(lvl)) {
+    _updateLogStats();
     return;
   }
 
   // Ajout incrémental (plus rapide qu'un re-render complet)
   const line = document.createElement('div');
-  line.className = `log-${level || 'info'}`;
+  line.className = `log-${lvl}`;
   line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
   logsConsole.appendChild(line);
 
@@ -84,10 +97,7 @@ window.api.onLog(({ level, message }) => {
   }
 
   if (_autoScroll) logsConsole.scrollTop = logsConsole.scrollHeight;
-  if (logStats) {
-    const vis = _logBuffer.filter((e) => _logLevelVisible(e.level)).length;
-    logStats.textContent = `${vis} log(s) affiché(s) / ${_logBuffer.length} total`;
-  }
+  _updateLogStats();
 });
 
 // Bascule auto-scroll
@@ -165,6 +175,7 @@ if (exportLogsBtn) {
 if (clearLogsBtn) {
   clearLogsBtn.addEventListener('click', () => {
     _logBuffer = [];
+    _visibleLogCount = 0;
     logsConsole.innerHTML = '';
     if (logStats) logStats.textContent = '0 log(s) affiché(s)';
   });

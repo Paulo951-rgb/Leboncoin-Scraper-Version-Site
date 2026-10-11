@@ -570,7 +570,8 @@ class DescriptionEnricher {
       }
 
       if (seq) {
-        for (const item of items) {
+        for (let idx = 0; idx < items.length; idx++) {
+          const item = items[idx];
           try {
             // Double vérification côté navigateur (défense en profondeur).
             const u = new URL(item.url);
@@ -591,7 +592,9 @@ class DescriptionEnricher {
           } catch (e) {
             results[item.id] = { error: e.message };
           }
-          if (items.indexOf(item) < items.length - 1) {
+          // indexOf() était O(n) → boucle O(n²) sur de gros lots ; l'index
+          // courant remplace ce parcours (Thème 7 perf).
+          if (idx < items.length - 1) {
             await sleep(800 + Math.random() * 1000);
           }
         }

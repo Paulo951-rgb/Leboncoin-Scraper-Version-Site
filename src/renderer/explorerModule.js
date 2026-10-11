@@ -104,16 +104,21 @@ function populateSessionDropdown(selectEl) {
 }
 
 // Écouteurs de filtrage sécurisés (Évitent tout plantage en cas d'élément absent)
-if (filterKeyword) filterKeyword.addEventListener('input', () => { saveExplorerFilters(); renderExplorerAds(); });
-if (filterPriceMin) filterPriceMin.addEventListener('input', () => { saveExplorerFilters(); renderExplorerAds(); });
-if (filterPriceMax) filterPriceMax.addEventListener('input', () => { saveExplorerFilters(); renderExplorerAds(); });
+// Les champs TEXTE/nombre (frappe continue) sont débouncés : sans cela, chaque
+// touche déclenchait un filtrage complet + reconstruction innerHTML de la liste
+// (jusqu'à plusieurs milliers d'annonces) → saisie saccadée. Les <select> restent
+// immédiats (un seul événement par choix).
+const _debouncedRender = debounce(() => { saveExplorerFilters(); renderExplorerAds(); }, 180);
+if (filterKeyword) filterKeyword.addEventListener('input', _debouncedRender);
+if (filterPriceMin) filterPriceMin.addEventListener('input', _debouncedRender);
+if (filterPriceMax) filterPriceMax.addEventListener('input', _debouncedRender);
 if (filterTagSelect) filterTagSelect.addEventListener('change', () => { saveExplorerFilters(); renderExplorerAds(); });
 if (sortSelect) sortSelect.addEventListener('change', () => { saveExplorerFilters(); renderExplorerAds(); });
 // Filtres scraping (type de remise / type vendeur / note min / likes min / état)
 if (filterDeliveryType) filterDeliveryType.addEventListener('change', () => { saveExplorerFilters(); renderExplorerAds(); });
 if (filterSellerType) filterSellerType.addEventListener('change', () => { saveExplorerFilters(); renderExplorerAds(); });
-if (filterMinRating) filterMinRating.addEventListener('input', () => { saveExplorerFilters(); renderExplorerAds(); });
-if (filterMinLikes) filterMinLikes.addEventListener('input', () => { saveExplorerFilters(); renderExplorerAds(); });
+if (filterMinRating) filterMinRating.addEventListener('input', _debouncedRender);
+if (filterMinLikes) filterMinLikes.addEventListener('input', _debouncedRender);
 if (filterEtat) filterEtat.addEventListener('change', () => { saveExplorerFilters(); renderExplorerAds(); });
 
 // Changement de session : rafraîchit immédiatement tout l'explorateur (sans

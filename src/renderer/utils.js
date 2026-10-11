@@ -170,6 +170,21 @@ function installDelegatedActions() {
 }
 window.installDelegatedActions = installDelegatedActions;
 
+// ─── Debounce (Thème 7 perf) ────────────────────────────────────────────────
+// Retarde l'exécution d'une fonction jusqu'à `wait` ms après le dernier appel.
+// Utilisé pour les filtres texte de l'explorateur : sans cela, chaque frappe
+// déclenchait un filtrage complet + reconstruction innerHTML de la liste.
+function debounce(fn, wait = 150) {
+  let timer = null;
+  const debounced = (...args) => {
+    if (timer) clearTimeout(timer);
+    timer = setTimeout(() => { timer = null; fn(...args); }, wait);
+  };
+  debounced.cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  return debounced;
+}
+window.debounce = debounce;
+
 window.openFolder = async (folderPath) => {
   if (!folderPath) return;
   try {

@@ -3236,6 +3236,76 @@ console.log('\n[37c] Sécurité jsdom (actions déléguées, CSP)');
 
 console.log('\n[37c] OK');
 
+// --- 37d. Perf (Thème 7) : debounce + compteur de logs incrémental ---
+console.log('\n[37d] Perf jsdom (debounce, compteur logs incrémental)');
+{
+  const { JSDOM } = require('jsdom');
+  const repoRoot = path.join(__dirname, '..');
+  const utilsSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/utils.js'), 'utf8');
+
+  // 37d.1 debounce : un seul appel après une rafale ; cancel annule.
+  {
+    const dom = new JSDOM('<!doctype html><html><body></body></html>', { runScripts: 'outside-only', url: 'https://app.local/' });
+    dom.window.api = { openExternal: () => {} };
+    dom.window.eval(utilsSrc);
+    let calls = 0;
+    const d = dom.window.debounce(() => { calls++; }, 40);
+    d(); d(); d();
+    assert(calls === 0, 'perf: debounce ne s\'exécute pas pendant la rafale');
+    await new Promise((r) => setTimeout(r, 80));
+    assert(calls === 1, 'perf: debounce → un seul appel après la rafale');
+    d(); d.cancel();
+    await new Promise((r) => setTimeout(r, 80));
+    assert(calls === 1, 'perf: debounce.cancel annule l\'appel en attente');
+    dom.window.close();
+  }
+
+  // 37d.2 logsModule : compteur visible exact (incrémental) avec éviction buffer.
+  {
+    const html = `<!doctype html><html><body>
+      <div class="logs-toolbar">
+        <button id="logModeToggleBtn">mode</button>
+        <button id="autoScrollToggleBtn">scroll</button>
+        <button id="copyLogsBtn">copy</button>
+        <button id="exportLogsBtn">export</button>
+        <button id="clearLogsBtn">clear</button>
+      </div>
+      <div id="logsConsole" class="console"></div>
+      <div id="logStats"></div>
+      <div id="structureWarning" class="hidden"><span id="structureWarningText"></span></div>
+    </body></html>`;
+    const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://app.local/' });
+    const { window } = dom;
+    let onLogCb = null;
+    window.api = { onLog: (cb) => { onLogCb = cb; }, exportLogs: async () => ({ ok: true }), openFolder: async () => ({ ok: true }), openFile: async () => ({ ok: true }), openExternal: () => {} };
+    const appStateSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/appState.js'), 'utf8');
+    const logsSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/logsModule.js'), 'utf8');
+    window.eval(appStateSrc + '\n' + logsSrc);
+
+    // 3 info visibles + 2 debug masqués (mode normal) → compteur = 3.
+    onLogCb({ level: 'info', message: 'a' });
+    onLogCb({ level: 'debug', message: 'b' });
+    onLogCb({ level: 'info', message: 'c' });
+    onLogCb({ level: 'debug', message: 'd' });
+    onLogCb({ level: 'warn', message: 'e' });
+    const stats = () => window.document.getElementById('logStats').textContent;
+    assert(/3 log\(s\) affiché\(s\) \/ 5 total/.test(stats()),
+      'perf: compteur visible incrémental exact (3/5)');
+
+    // Passage en debug → tout visible → 5/5.
+    window.document.getElementById('logModeToggleBtn').click();
+    assert(/5 log\(s\) affiché\(s\) \/ 5 total/.test(stats()),
+      'perf: bascule debug → compteur recalculé (5/5)');
+
+    // Vider → 0.
+    window.document.getElementById('clearLogsBtn').click();
+    assert(/0 log\(s\)/.test(stats()), 'perf: compteur remis à 0 après Vider');
+    dom.window.close();
+  }
+}
+
+console.log('\n[37d] OK');
+
 // --- 38. Modules main sous-couverts : settings, logger, fileManager,
 // storageCleaner, jobHistory, ipcHandlers (invocation réelle des handlers) ---
 console.log('\n[38] Modules main (settings, logger, fileManager, storageCleaner, jobHistory, ipcHandlers)');
