@@ -2718,6 +2718,39 @@ console.log('\n[33] Roadmap fiabilité (disjoncteur, journal, reprise, config)')
 
 console.log('\n[33] OK');
 
+// --- 34. Observabilité : niveau de log configurable + export des logs ---
+console.log('\n[34] Observabilité (niveau de log, export)');
+{
+  const { sanitizeSettingsPatch, SETTINGS_DEFAULTS } = require('../src/main/core/settings');
+  assert(SETTINGS_DEFAULTS.logLevel === 'debug',
+    'settings: niveau de log par défaut = debug (aucune perte de logs)');
+  const ok = sanitizeSettingsPatch({ logLevel: 'warn' });
+  assert(ok.logLevel === 'warn', 'settings: logLevel valide conservé (warn)');
+  const bad = sanitizeSettingsPatch({ logLevel: 'trace' });
+  assert(!('logLevel' in bad), 'settings: logLevel inconnu rejeté (pas d\'injection)');
+
+  const ipcCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/core/ipcHandlers.js'), 'utf8');
+  assert(/LOG_LEVEL_RANK/.test(ipcCode) && /isLogVisible/.test(ipcCode),
+    'ipcHandlers: filtre de niveau de log présent');
+  assert(/ipcMain\.handle\('logs:export'/.test(ipcCode),
+    'ipcHandlers: handler logs:export présent');
+  assert(/BASE_OUT_DIR, 'logs'/.test(ipcCode),
+    'ipcHandlers: export logs écrit dans BASE_OUT_DIR/logs (chemin main, pas renderer)');
+
+  const preloadCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/preload.js'), 'utf8');
+  assert(/exportLogs:/.test(preloadCode) && /logs:export/.test(preloadCode),
+    'preload: API exportLogs exposée');
+
+  const htmlCode2 = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/index.html'), 'utf8');
+  assert(/id="exportLogsBtn"/.test(htmlCode2), 'index.html: bouton Exporter les logs présent');
+
+  const logsCode = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/logsModule.js'), 'utf8');
+  assert(/_buildVisibleLogText/.test(logsCode) && /exportLogs\(/.test(logsCode),
+    'logsModule: export des logs visibles via _buildVisibleLogText');
+}
+
+console.log('\n[34] OK');
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

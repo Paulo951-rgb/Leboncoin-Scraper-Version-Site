@@ -29,6 +29,7 @@ const SETTINGS_DEFAULTS = Object.freeze({
   headless: true,           // navigateur invisible (sauf CAPTCHA)
 
   logRetentionDays: 7,      // rétention des logs rotatifs (jours)
+  logLevel: 'debug',        // niveau minimal transmis au renderer : 'debug'|'info'|'warn'|'error'
   autoCleanJobsDays: 0,     // 0 = désactivé ; sinon nb de jours avant suppression auto des jobs
   includeSellerData: true,  // inclure les données vendeur dans les exports et l'interface
 });
@@ -68,6 +69,9 @@ function sanitizeSettingsPatch(patch) {
   if ('logRetentionDays' in patch) {
     const n = intInRange(patch.logRetentionDays, 1, 3650);
     if (n !== undefined) out.logRetentionDays = n;
+  }
+  if ('logLevel' in patch) {
+    if (['debug', 'info', 'warn', 'error'].includes(patch.logLevel)) out.logLevel = patch.logLevel;
   }
   if ('autoCleanJobsDays' in patch) {
     const n = intInRange(patch.autoCleanJobsDays, 0, 3650);

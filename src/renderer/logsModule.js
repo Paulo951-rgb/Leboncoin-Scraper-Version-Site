@@ -7,7 +7,18 @@ const logStats = document.getElementById('logStats');
 const autoScrollToggleBtn = document.getElementById('autoScrollToggleBtn');
 const logModeToggleBtn = document.getElementById('logModeToggleBtn');
 const copyLogsBtn = document.getElementById('copyLogsBtn');
+const exportLogsBtn = document.getElementById('exportLogsBtn');
 const clearLogsBtn = document.getElementById('clearLogsBtn');
+
+// Construit le texte des logs visibles (mode courant), réutilisé par Copier/Exporter.
+function _buildVisibleLogText() {
+  const lines = [];
+  for (const entry of _logBuffer) {
+    if (!_logLevelVisible(entry.level)) continue;
+    lines.push(`[${entry.time}] [${(entry.level || 'info').toUpperCase()}] ${entry.message}`);
+  }
+  return lines.join('\n');
+}
 
 function _logLevelVisible(level) {
   if (_logMode === 'debug') return true;
@@ -105,12 +116,7 @@ if (logModeToggleBtn) {
 // Copier tous les logs affichés
 if (copyLogsBtn) {
   copyLogsBtn.addEventListener('click', async () => {
-    const lines = [];
-    for (const entry of _logBuffer) {
-      if (!_logLevelVisible(entry.level)) continue;
-      lines.push(`[${entry.time}] [${(entry.level || 'info').toUpperCase()}] ${entry.message}`);
-    }
-    const text = lines.join('\n');
+    const text = _buildVisibleLogText();
     if (!text) {
       const orig = copyLogsBtn.textContent;
       copyLogsBtn.textContent = 'Rien à copier';
@@ -126,8 +132,32 @@ if (copyLogsBtn) {
       document.body.removeChild(ta);
     }
     const orig = copyLogsBtn.textContent;
-    copyLogsBtn.textContent = `✅ ${lines.length} copiés`;
+    copyLogsBtn.textContent = `✅ ${text.split('\n').length} copiés`;
     setTimeout(() => { copyLogsBtn.textContent = orig; }, 2000);
+  });
+}
+
+// Exporter les logs affichés dans un fichier .log (via le main process).
+if (exportLogsBtn) {
+  exportLogsBtn.addEventListener('click', async () => {
+    const text = _buildVisibleLogText();
+    const orig = exportLogsBtn.textContent;
+    if (!text) {
+      exportLogsBtn.textContent = 'Rien à exporter';
+      setTimeout(() => { exportLogsBtn.textContent = orig; }, 1500);
+      return;
+    }
+    try {
+      const res = await window.api.exportLogs(text);
+      if (res && res.ok) {
+        exportLogsBtn.textContent = '✅ Exporté';
+      } else {
+        exportLogsBtn.textContent = '⚠️ Échec';
+      }
+    } catch {
+      exportLogsBtn.textContent = '⚠️ Échec';
+    }
+    setTimeout(() => { exportLogsBtn.textContent = orig; }, 2500);
   });
 }
 

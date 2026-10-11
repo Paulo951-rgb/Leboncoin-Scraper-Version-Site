@@ -29,6 +29,13 @@ function setupIpcHandlers(getMainWindow) {
   // plusieurs sessions se succèdent dans la même console).
   let currentJobId = null;
 
+  // Niveau de log minimal transmis au renderer (configurable). Le pipeline
+  // continue de tout émettre ; on filtre au niveau du pont IPC pour éviter de
+  // saturer la console avec des logs debug en production.
+  const LOG_LEVEL_RANK = { debug: 10, info: 20, warn: 30, error: 40 };
+  let currentLogLevel = 'debug';
+  const isLogVisible = (level) => (LOG_LEVEL_RANK[level] || 20) >= (LOG_LEVEL_RANK[currentLogLevel] || 10);
+
   // Getter de fenêtre principale : renvoie null si détruite/fermée,
   // évitant les crashes "Cannot read properties of null" sur webContents.send.
   const getWin = () => {
@@ -57,6 +64,7 @@ function setupIpcHandlers(getMainWindow) {
 
   const { logger } = require('../utils/logger');
   logger.setRetention(settings.logRetentionDays || 7);
+  currentLogLevel = settings.logLevel || 'debug';
 
   setTimeout(() => {
     StorageCleaner.cleanOldHars(settings.autoCleanHarDays || 7);
@@ -66,7 +74,10 @@ function setupIpcHandlers(getMainWindow) {
     }
   }, 3000);
 
-  const sendLog = (data) => { const w = getWin(); if (w) w.webContents.send('log', currentJobId ? { ...data, jobId: currentJobId } : data); };
+  const sendLog = (data) => {
+    if (!isLogVisible(data.level || 'info')) return;
+    const w = getWin(); if (w) w.webContents.send('log', currentJobId ? { ...data, jobId: currentJobId } : data);
+  };
   const sendProgress = (data) => { const w = getWin(); if (w) w.webContents.send('progress', data); };
   const sendStatus = (status) => { const w = getWin(); if (w) w.webContents.send('status', currentJobId ? { ...status, jobId: currentJobId } : status); };
 
@@ -457,7 +468,23 @@ function setupIpcHandlers(getMainWindow) {
   });
 
   ipcMain.handle('config:save', async (event, patch) => {
-    return saveSettings(patch);
+    const merged = saveSettings(patch);
+    if (merged && merged.logLevel) currentLogLevel = merged.logLevel;
+    return merged;
+  });
+
+  // 💾 Export des logs de session vers un fichier texte (dans BASE_OUT_DIR/logs).
+  // Le renderer envoie le texte déjà formaté ; le main choisit le chemin (jamais
+  // fourni par le renderer) pour éviter toute écriture arbitraire.
+  ipcMain.handle('logs:export', async (event, text) => {
+    const safeText = typeof text === 'string' ? text : '';
+    if (!safeText.trim()) return { ok: false, error: 'Aucun log à exporter.' };
+    const logsDir = path.join(BASE_OUT_DIR, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const outPath = path.join(logsDir, `session-export-${ts}.log`);
+    fs.writeFileSync(outPath, safeText, 'utf8');
+    return { ok: true, path: outPath };
   });
 
   // 🔐 Secrets chiffrés (clés API stockées via safeStorage, pas en clair)
