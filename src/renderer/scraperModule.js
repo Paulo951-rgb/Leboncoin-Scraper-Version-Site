@@ -248,20 +248,62 @@ function applySearchConfig(cfg) {
   }
 }
 
+// Enregistrement d'un preset : `window.prompt()` n'est PAS supporté par Electron
+// (il ne s'affiche pas et lève une erreur) → le bouton « Sauvegarder comme Preset »
+// était totalement non fonctionnel. On utilise une modale dédiée à la place.
+const presetModal = document.getElementById('presetModal');
+const presetNameInput = document.getElementById('presetNameInput');
+const presetConfirmBtn = document.getElementById('presetConfirmBtn');
+const presetCancelBtn = document.getElementById('presetCancelBtn');
+
+function closePresetModal() {
+  if (presetModal) presetModal.classList.add('hidden');
+}
+
 savePresetBtn.addEventListener('click', () => {
   const cfg = collectSearchConfig();
   if (!cfg.searchUrl) return alert('Veuillez entrer une URL de recherche.');
-  const name = prompt('Nom du modèle de recherche :', 'Ma Recherche');
-  if (name) {
-    presets.push({ name, ...cfg });
-    localStorage.setItem('search-presets', JSON.stringify(presets));
-    renderPresets();
-  }
+  if (!presetModal || !presetNameInput) return;
+  presetNameInput.value = 'Ma Recherche';
+  presetModal.classList.remove('hidden');
+  presetNameInput.focus();
+  presetNameInput.select();
 });
+
+if (presetConfirmBtn) {
+  presetConfirmBtn.addEventListener('click', () => {
+    const name = (presetNameInput?.value || '').trim();
+    if (!name) { presetNameInput?.focus(); return; }
+    presets.push({ name, ...collectSearchConfig() });
+    try { localStorage.setItem('search-presets', JSON.stringify(presets)); } catch { /* quota */ }
+    renderPresets();
+    closePresetModal();
+  });
+}
+if (presetCancelBtn) presetCancelBtn.addEventListener('click', closePresetModal);
+if (presetNameInput) {
+  presetNameInput.addEventListener('keydown', (e) => {
+    if (e.key === 'Enter') { e.preventDefault(); presetConfirmBtn?.click(); }
+    if (e.key === 'Escape') { e.preventDefault(); closePresetModal(); }
+  });
+}
+if (presetModal) {
+  presetModal.addEventListener('click', (e) => { if (e.target === presetModal) closePresetModal(); });
+}
 
 window.loadPreset = (i) => {
   const p = presets[i];
-  if (p) applySearchConfig({ searchUrl: p.url || p.searchUrl, pages: p.pages, ...p });
+  if (!p) return;
+  // L'ordre est important : les clés explicites écrasent les résidus du spread.
+  // L'ancienne version re-spreadait l'objet preset APRÈS searchUrl, donc la clé
+  // historique `url` écrasait `searchUrl` → le champ URL restait inchangé.
+  applySearchConfig({
+    searchUrl: p.searchUrl || p.url,
+    pages: p.pages,
+    limit: p.limit,
+    noDesc: p.noDesc,
+    proxyUrl: p.proxyUrl,
+  });
 };
 
 window.deletePreset = (i) => {

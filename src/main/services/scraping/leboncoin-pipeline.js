@@ -14,7 +14,7 @@
 const fs = require('fs');
 const path = require('path');
 const { sleep, atomicWriteFileSync, cleanText } = require('../../utils/helpers');
-const { summarizeAds, summarizeHarEntries, truncate, formatBytes, formatMs } = require('../../utils/diagnostics');
+const { summarizeAds, summarizeHarEntries, truncate, formatBytes, formatMs, describeError } = require('../../utils/diagnostics');
 const { getRandomUserAgent } = require('./userAgents');
 const { writeWithChecksum } = require('../../utils/integrity');
 const { AdaptiveRateLimiter } = require('../../utils/rateLimiter');

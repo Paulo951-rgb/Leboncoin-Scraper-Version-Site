@@ -643,6 +643,21 @@
     </div>
   </div>
 
+  <!-- MODAL NOM DU PRESET (remplace window.prompt(), non supporté par Electron) -->
+  <div id="presetModal" class="modal-overlay hidden">
+    <div class="modal-card" style="max-width:420px;">
+      <h3>📌 Enregistrer un modèle de recherche</h3>
+      <div class="form-group">
+        <label for="presetNameInput">Nom du modèle :</label>
+        <input type="text" id="presetNameInput" maxlength="80" placeholder="Ma Recherche">
+      </div>
+      <div class="modal-actions">
+        <button id="presetCancelBtn" class="btn btn-secondary" type="button">Annuler</button>
+        <button id="presetConfirmBtn" class="btn btn-primary" type="button">Enregistrer</button>
+      </div>
+    </div>
+  </div>
+
   <!-- MODAL COMPARATEUR CÔTÉ À CÔTÉ -->
   <div id="compareModal" class="modal-overlay hidden">
     <div class="modal-card modal-large" style="width:900px;">

@@ -25,6 +25,9 @@ function escapePath(pathStr) {
   return String(pathStr)
     .replace(/\\/g, '\\\\')
     .replace(/'/g, "\\'")
+    // '&' en PREMIER (avant '&quot;') : sinon l'échappement des guillemets
+    // injecterait un '&' qui serait ensuite transformé en '&amp;' → '&amp;quot;'
+    // affiché littéralement et double-encodage. L'ordre initial était buggé.
     .replace(/&/g, '&amp;')
     .replace(/"/g, '&quot;');
 }

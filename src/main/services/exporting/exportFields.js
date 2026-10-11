@@ -230,9 +230,21 @@ function _resolveDisplayFieldValue(fieldDef, ad) {
  */
 function filterAdByFields(ad, fields, options) {
   if (!ad || typeof ad !== 'object') return ad;
-  if (!fields || !Array.isArray(fields) || fields.length === 0) return ad;
-
   const excludeSeller = options && options.excludeSellerData === true;
+
+  // fields null/[] = « toutes les clés » (profil Maximum). On ne peut pas
+  // retourner l'objet tel quel si l'utilisateur a demandé à exclure les données
+  // vendeur : sinon le réglage « Données vendeur » n'avait AUCUN effet en profil
+  // Maximum (les champs vendeur restaient dans l'export).
+  if (!fields || !Array.isArray(fields) || fields.length === 0) {
+    if (!excludeSeller) return ad;
+    const out = {};
+    for (const k of Object.keys(ad)) {
+      if (!SELLER_FIELD_KEYS.has(k)) out[k] = ad[k];
+    }
+    return out;
+  }
+
   let selectedKeys = fields;
   if (excludeSeller) {
     selectedKeys = fields.filter((k) => !SELLER_FIELD_KEYS.has(k));
@@ -268,6 +280,7 @@ function filterAdByFields(ad, fields, options) {
  * `options` = { excludeSellerData: boolean } pour exclure les champs vendeur.
  */
 function toReadableBlock(ad, index, fields, options) {
+  if (!ad || typeof ad !== 'object') ad = {};
   let selectedKeys = (Array.isArray(fields) && fields.length > 0) ? fields : ALL_FIELD_KEYS;
   if (options && options.excludeSellerData) {
     selectedKeys = selectedKeys.filter((k) => !SELLER_FIELD_KEYS.has(k));
