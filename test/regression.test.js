@@ -2583,6 +2583,141 @@ console.log('\n[32] Audit global : correctifs');
   console.log('\n[32] OK');
 }
 
+// --- 33. Modules du roadmap (fiabilité scraping) ---
+console.log('\n[33] Roadmap fiabilité (disjoncteur, journal, reprise, config)');
+
+// 33.1 config/scraping : source unique des presets (pas d'electron requis).
+{
+  const cfg = require('../src/main/config/scraping');
+  assert(cfg.SPEED_PRESETS.moyen.concurrency === 10 && cfg.SPEED_PRESETS.moyen.minDelayMs === 500,
+    'config/scraping: preset « moyen » 10/500 (historique)');
+  assert(cfg.SPEED_PRESETS['ultra-rapide'].concurrency === 25 && cfg.SPEED_PRESETS['ultra-rapide'].minDelayMs === 50,
+    'config/scraping: preset « ultra-rapide » 25/50 (historique)');
+  assert(cfg.getSpeedPreset('inconnu') === cfg.SPEED_PRESETS.moyen,
+    'config/scraping: getSpeedPreset retombe sur « moyen » (défaut)');
+  assert(cfg.BLOCK_THRESHOLD >= 1 && cfg.CIRCUIT_STATES.STOPPED === 'stopped',
+    'config/scraping: seuil de blocage + états du disjoncteur définis');
+  // Le module ne doit PAS dépendre d'electron (importable par le pipeline forké).
+  assert(!/require\(['"]electron['"]\)/.test(fs.readFileSync(path.join(__dirname, '..', 'src/main/config/scraping.js'), 'utf8')),
+    'config/scraping: aucun require(electron) (compatible pipeline forké)');
+}
+
+// 33.2 CircuitBreaker : machine à états normal→slowed→blocked→stopped.
+{
+  const { CircuitBreaker } = require('../src/main/services/scraping/circuitBreaker');
+  const cb = new CircuitBreaker({ blockThreshold: 3 });
+  assert(cb.state === 'normal' && !cb.shouldStop(), 'circuit: état initial normal, pas d\'arrêt');
+  cb.recordError();
+  assert(cb.state === 'slowed' && !cb.shouldStop(), 'circuit: erreur réseau → slowed (on continue)');
+  cb.recordSuccess();
+  assert(cb.state === 'normal' && cb.consecutiveBlocks === 0, 'circuit: succès → retour normal');
+  assert(cb.recordBlock(403, 'HTTP_403') === false && cb.state === 'blocked',
+    'circuit: 1er blocage → blocked, pas encore d\'arrêt');
+  assert(cb.recordBlock(403, 'HTTP_403') === false, 'circuit: 2e blocage → pas encore d\'arrêt');
+  assert(cb.recordBlock(403, 'HTTP_403') === true && cb.shouldStop(),
+    'circuit: 3e blocage consécutif → stopped (arrêt préventif)');
+  const info = cb.stopInfo();
+  assert(info && info.reason === 'access_refused' && info.status === 403,
+    'circuit: stopInfo → access_refused / HTTP 403');
+  // 429 → rate_limited.
+  const cb429 = new CircuitBreaker({ blockThreshold: 1 });
+  cb429.recordBlock(429, 'HTTP_429');
+  assert(cb429.stopInfo().reason === 'rate_limited', 'circuit: 429 → raison rate_limited');
+  // Un succès remet le compteur de blocages consécutifs à zéro.
+  const cb2 = new CircuitBreaker({ blockThreshold: 3 });
+  cb2.recordBlock(403, 'HTTP_403'); cb2.recordBlock(403, 'HTTP_403');
+  cb2.recordSuccess();
+  assert(cb2.consecutiveBlocks === 0, 'circuit: succès réinitialise les blocages consécutifs');
+}
+
+// 33.3 NetworkJournal : compteurs réseau objectifs.
+{
+  const { NetworkJournal } = require('../src/main/services/scraping/networkJournal');
+  const j = new NetworkJournal();
+  j.recordNavigation(); j.recordNavigation();
+  j.recordPageResult(true); j.recordPageResult(false);
+  j.recordDetailRequest(); j.recordBlock('https://x/ad/1', 403); j.recordError();
+  const s = j.snapshot();
+  assert(s.navigations === 2 && s.pagesOk === 1 && s.pagesFailed === 1,
+    'journal: navigations/pages comptées');
+  assert(s.detailRequests === 1 && s.blockedRequests === 1 && s.otherErrors === 1,
+    'journal: requêtes détail / blocages / erreurs comptées');
+  assert(s.blockedUrls.length === 1 && s.blockedUrls[0].status === 403,
+    'journal: URL bloquée enregistrée avec statut');
+}
+
+// 33.4 captureState : progression + fusion HAR (reprise incrémentale).
+{
+  const os = require('os');
+  const cs = require('../src/main/services/scraping/captureState');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-capstate-'));
+  cs.writeProgress(tmp, { searchUrl: 'https://x', pagesRequested: 10, lastPageOk: 6, pagesOk: 6 });
+  const prog = cs.readProgress(tmp);
+  assert(prog && prog.lastPageOk === 6 && typeof prog.updatedAt === 'string',
+    'captureState: progression écrite/relue (lastPageOk + updatedAt)');
+  // Fusion HAR : deux HAR → un seul contenant toutes les entrées.
+  const harA = path.join(tmp, 'a.har');
+  const harB = path.join(tmp, 'b.har');
+  const out = path.join(tmp, 'merged.har');
+  fs.writeFileSync(harA, JSON.stringify({ log: { version: '1.2', entries: [{ request: { url: 'p1' } }] } }));
+  fs.writeFileSync(harB, JSON.stringify({ log: { version: '1.2', entries: [{ request: { url: 'p7' } }] } }));
+  const merged = cs.mergeHarFiles([harA, harB], out);
+  const mergedHar = JSON.parse(fs.readFileSync(out, 'utf8'));
+  assert(merged.entries === 2 && mergedHar.log.entries.length === 2,
+    'captureState: fusion HAR concatène les entrées (pages 1-6 + 7-10)');
+  assert(mergedHar.log.entries[0].request.url === 'p1' && mergedHar.log.entries[1].request.url === 'p7',
+    'captureState: ordre des entrées préservé après fusion');
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// 33.5 sessionPaths : résolution centralisée (pas d'electron).
+{
+  const sp = require('../src/main/services/scraping/sessionPaths');
+  assert(/global-session\.json$/.test(sp.getGlobalSessionPath('/base')),
+    'sessionPaths: session globale = baseOutDir/global-session.json');
+  assert(/session-state\.json$/.test(sp.getJobSessionPath('/base/job-1')),
+    'sessionPaths: session job = jobDir/session-state.json');
+  assert(sp.getJobSessionPathFromResults('/base/job-1/results') === sp.getJobSessionPath('/base/job-1'),
+    'sessionPaths: session déduite de results/ remonte au jobDir');
+  assert(!/require\(['"]electron['"]\)/.test(fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/sessionPaths.js'), 'utf8')),
+    'sessionPaths: aucun require(electron) (compatible pipeline forké)');
+}
+
+// 33.6 harCapturer : reprise + détection de page vide + journal + pas de boucle CAPTCHA.
+{
+  const harCode3 = fs.readFileSync(path.join(base, 'services/scraping/harCapturer.js'), 'utf8');
+  assert(/resumeFrom/.test(harCode3) && /startPage/.test(harCode3),
+    'harCapturer: reprise incrémentale (resumeFrom/startPage)');
+  assert(/_looksLikeEmptyResults/.test(harCode3),
+    'harCapturer: détection page de résultats vide (soft-block 200)');
+  assert(/seenPageSignatures/.test(harCode3),
+    'harCapturer: garde-fou boucle de pagination');
+  assert(/verified === false/.test(harCode3),
+    'harCapturer: pré-check non validé → arrêt (pas de boucle de fenêtres CAPTCHA)');
+  assert(/writeProgress\(/.test(harCode3) && /mergeHarFiles/.test(harCode3),
+    'harCapturer: progression par page + fusion HAR à la reprise');
+}
+
+// 33.7 pipelineRunner : baseOutDir transmis (pipeline forké sans electron).
+{
+  const runnerCode = fs.readFileSync(path.join(base, 'services/scraping/pipelineRunner.js'), 'utf8');
+  assert(/--base-out-dir/.test(runnerCode) && /baseOutDir/.test(runnerCode),
+    'pipelineRunner: option --base-out-dir transmise au fork');
+}
+
+// 33.8 ipcHandlers : signal d'arrêt structuré (plus d'heuristique de texte).
+{
+  const ipcCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/core/ipcHandlers.js'), 'utf8');
+  assert(/\[STOP_REASON\]/.test(ipcCode) && /stopMatch/.test(ipcCode),
+    'ipcHandlers: détection via signal structuré [STOP_REASON]');
+  assert(!/msg\.includes\('interrompu'\)\s*\|\|\s*msg\.includes\('restreint'\)/.test(ipcCode),
+    'ipcHandlers: plus d\'heuristique de texte fragile (interrompu/restreint)');
+  assert(/currentJobId/.test(ipcCode),
+    'ipcHandlers: jobId de corrélation attaché aux logs/statuts');
+}
+
+console.log('\n[33] OK');
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

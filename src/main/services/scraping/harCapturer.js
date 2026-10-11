@@ -10,6 +10,8 @@ const { formatBytes, formatMs, describeError } = require('../../utils/diagnostic
 
 const { getRandomUserAgent } = require('./userAgents');
 const { ErrorCodes, createError } = require('./errorCodes');
+const { NetworkJournal } = require('./networkJournal');
+const { readProgress, writeProgress, mergeHarFiles } = require('./captureState');
 
 function buildPageUrl(baseUrl, pageNumber) {
   try {
@@ -31,6 +33,9 @@ class HarCapturer extends EventEmitter {
     this.minPageDelayMs = options.minPageDelayMs || 800;
     this.maxPageDelayMs = options.maxPageDelayMs || 1500;
     this.isCancelled = false;
+    // Journal réseau structuré (compteurs objectifs pour report.json) : compte
+    // les navigations, pages réussies/échouées et blocages avec leur URL.
+    this.journal = options.journal || new NetworkJournal();
     // 🛑 FIX CRITIQUE : UA FIXE pour toute la durée de la capture.
     // Avant, chaque _newStealthContext() appelait getRandomUserAgent() → UA
     // différent entre le warmup et la capture. Leboncoin détectait l'incohérence
@@ -184,7 +189,7 @@ class HarCapturer extends EventEmitter {
       await p.close().catch(() => {});
       await ctx.close().catch(() => {});
       this.emit('log', { level: 'info', message: '✅ Pré-check OK : aucun CAPTCHA, reprise invisible.' });
-      return;
+      return { verified: true, reason: 'no_captcha' };
     }
 
     // Blocage détecté (CAPTCHA ou HTTP 403/429) : ferme le contexte invisible
@@ -295,7 +300,7 @@ class HarCapturer extends EventEmitter {
         // qui empoisonneraient tous les jobs suivants. On ferme sans storageState.
         await vPage.close().catch(() => {});
         await vCtx.close().catch(() => {});
-        return;
+        return { verified: false, reason: 'cancelled' };
       }
 
       if (!confirmedClear) {
@@ -304,7 +309,7 @@ class HarCapturer extends EventEmitter {
         this.emit('log', { level: 'warn', message: `[warmup] [${timeoutErr.code}] CAPTCHA non résolu dans le délai — session non persistée.` });
         await vPage.close().catch(() => {});
         await vCtx.close().catch(() => {});
-        return;
+        return { verified: false, reason: 'timeout' };
       }
 
       const elapsedSec = Math.round((Date.now() - startTime) / 1000);
@@ -329,7 +334,7 @@ class HarCapturer extends EventEmitter {
         this.emit('log', { level: 'warn', message: `[warmup] [${secondCaptchaErr.code}] Un 2e CAPTCHA consécutif est apparu — session non persistée. Relancez le scraping.` });
         await vPage.close().catch(() => {});
         await vCtx.close().catch(() => {});
-        return;
+        return { verified: false, reason: 'second_captcha' };
       }
 
       // Persiste la session validée pour les jobs suivants (plus de fenêtre visible).
@@ -338,19 +343,71 @@ class HarCapturer extends EventEmitter {
       await vPage.close().catch(() => {});
       await vCtx.close().catch(() => {});
       this.emit('log', { level: 'info', message: '✅ CAPTCHA résolu et session persistée — reprise du scraping invisible.' });
+      return { verified: true, reason: 'captcha_resolved' };
     } finally {
       await visibleBrowser.close().catch(() => {});
     }
   }
 
-  async capture({ searchUrl, maxPages = 1, outputHarPath }) {
+  // Détecte une page de résultats VIDE (HTTP 200 mais sans annonces) : soft-block
+  // anti-bot, page d'erreur HTML, ou recherche réellement sans résultat. On
+  // distingue les deux via des marqueurs d'erreur/blocklist. Sans ce contrôle,
+  // un soft-block en 200 était traité comme une page réussie (aucune alerte).
+  async _looksLikeEmptyResults(page) {
+    try {
+      const info = await page.evaluate(() => {
+        const text = (document.title + ' ' + (document.body ? document.body.innerText : '')).toLowerCase();
+        // Sélecteurs connus des cartes d'annonces Leboncoin.
+        const count = document.querySelectorAll('a[href*="/ad/"], article[data-test-id], [data-role="ad-card"], a[data-test-id="ad"]').length;
+        const errorMarkers = ['erreur', 'error', 'indisponible', 'unavailable', 'réessayez', 'service indisponible', 'try again', 'something went wrong'];
+        const matched = errorMarkers.find((m) => text.includes(m)) || null;
+        return { count, matched };
+      });
+      if (info.count > 0) return { empty: false };
+      // Aucune carte : soit blocage (marqueur d'erreur), soit recherche vide.
+      return { empty: true, blocked: !!info.matched, marker: info.matched };
+    } catch (e) {
+      this.emit('log', { level: 'debug', message: `[capture] Détection page vide impossible : ${e.message}.` });
+      return { empty: false };
+    }
+  }
+
+  async capture({ searchUrl, maxPages = 1, outputHarPath, resumeFrom = null }) {
     if (!searchUrl) throw new Error("L'URL de recherche est requise.");
     const targetDir = path.dirname(outputHarPath);
     fs.mkdirSync(targetDir, { recursive: true });
     const statePath = path.join(targetDir, 'session-state.json');
 
+    // Reprise incrémentale : si `resumeFrom` est fourni (ou détecté via
+    // capture-progress.json), on redémarre à cette page au lieu de 1. Les pages
+    // déjà capturées restent dans le HAR précédent (fusionné par le main process).
+    let startPage = 1;
+    if (typeof resumeFrom === 'number' && resumeFrom > 1) {
+      startPage = Math.min(resumeFrom, maxPages);
+      this.emit('log', { level: 'info', message: `⏩ Reprise incrémentale demandée : capture à partir de la page ${startPage} (pages 1-${startPage - 1} déjà capturées).` });
+    } else {
+      // Auto-reprise : si un HAR partiel et un état de progression existent dans
+      // ce job (nouvelle tentative sur le même dossier), on reprend après la
+      // dernière page réussie au lieu de tout re-capturer.
+      const prev = readProgress(targetDir);
+      if (prev && typeof prev.lastPageOk === 'number' && prev.lastPageOk >= 1 && fs.existsSync(outputHarPath)) {
+        const resumeAt = Math.min(prev.lastPageOk + 1, maxPages);
+        if (resumeAt > 1) {
+          startPage = resumeAt;
+          this.emit('log', { level: 'info', message: `⏩ Reprise automatique détectée (${prev.lastPageOk} page(s) déjà OK) — capture à partir de la page ${startPage}.` });
+        }
+      }
+    }
+
     this.emit('log', { level: 'info', message: `🚀 Initialisation de la capture HAR (${maxPages} page(s))...` });
     this.emit('log', { level: 'debug', message: `[capture] searchUrl=${searchUrl} | maxPages=${maxPages} | outputHarPath=${outputHarPath} | proxy=${this.proxyUrl || 'aucun'} | headless=${this.headless}` });
+
+    // En reprise (startPage>1), Playwright écrirait dans outputHarPath et
+    // écraserait le HAR des pages déjà capturées. On écrit donc dans un HAR
+    // séparé, fusionné avec l'ancien à la fin.
+    const resumeHarPath = path.join(targetDir, 'capture-resume.har');
+    const activeHarPath = startPage > 1 ? resumeHarPath : outputHarPath;
+    const isResume = startPage > 1;
 
     let browser;
     let context;
@@ -363,7 +420,15 @@ class HarCapturer extends EventEmitter {
       let globalSessionSaved = false;
 
       // Pré-check captcha + bascule visible si nécessaire (avant la boucle HAR).
-      await this._warmupSession(browser, buildPageUrl(searchUrl, 1));
+      const warmup = await this._warmupSession(browser, buildPageUrl(searchUrl, 1));
+      // Si le pré-check n'a PAS pu valider l'accès (CAPTCHA non résolu, timeout,
+      // 2e CAPTCHA), on n'entame PAS la capture : c'était une boucle de fenêtres
+      // CAPTCHA stérile. Arrêt propre (le main process rapportera un échec).
+      if (warmup && warmup.verified === false) {
+        this.emit('log', { level: 'warn', message: `[capture] Pré-check non validé (${warmup.reason}) — capture annulée (aucune fenêtre CAPTCHA en boucle).` });
+        await browser.close().catch(() => {});
+        throw new Error(`Session non validée (${warmup.reason}) : capture annulée pour éviter une boucle de CAPTCHA.`);
+      }
       if (this.isCancelled) {
         this.emit('log', { level: 'debug', message: '[capture] Capture annulée après pré-check (isCancelled=true).' });
         await browser.close().catch(() => {});
@@ -379,7 +444,7 @@ class HarCapturer extends EventEmitter {
 
       const contextOptions = this._baseContextOptions({
         recordHar: {
-          path: outputHarPath,
+          path: activeHarPath,
           mode: 'full',
           urlFilter: /recherche|api|items/i,
         },
@@ -395,7 +460,16 @@ class HarCapturer extends EventEmitter {
       ({ ctx: context, p: page } = await this._newStealthContext(browser, contextOptions));
       this.emit('log', { level: 'debug', message: '[capture] Contexte HAR créé (filtrage URL: recherche|api|items).' });
 
-      for (let pageNum = 1; pageNum <= maxPages; pageNum++) {
+      // Signatures des pages déjà vues : détecte une boucle de pagination
+      // (Leboncoin peut renvoyer la MÊME page pour page=2, page=3…). Sans ce
+      // garde-fou, on consommait N navigations identiques (durée de session et
+      // risque de rate-limit multipliés sans aucun gain de données).
+      const seenPageSignatures = new Set();
+      // Erreur fatale différée : un `throw` direct dans le try par-page serait
+      // avalé par son `catch (gotoErr)`. On mémorise puis on relance après la boucle.
+      let fatalError = null;
+
+      for (let pageNum = startPage; pageNum <= maxPages; pageNum++) {
         if (this.isCancelled) {
           this.emit('log', { level: 'debug', message: `[capture] Boucle de capture interrompue à la page ${pageNum} (annulation).` });
           break;
@@ -414,6 +488,7 @@ class HarCapturer extends EventEmitter {
         this.emit('log', { level: 'info', message: `[Page ${pageNum}/${maxPages}] Navigation vers ${targetUrl}` });
 
         try {
+          this.journal.recordNavigation();
           const resp = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
           const httpStatus = resp ? resp.status() : '?';
           this.emit('log', { level: 'debug', message: `[Page ${pageNum}] Page chargée — HTTP ${httpStatus}.` });
@@ -444,6 +519,7 @@ class HarCapturer extends EventEmitter {
             const blockCode = httpBlocked ? (httpStatus === 403 ? ErrorCodes.HTTP_403 : httpStatus === 429 ? ErrorCodes.HTTP_429 : ErrorCodes.HTTP_UNKNOWN) : ErrorCodes.CAPTCHA_DETECTED;
             const blockErr = createError(blockCode, `BLOCAGE DÉTECTÉ (${reason}) — tentative de résolution interactive`, { page: pageNum, httpStatus, reason });
             this.emit('log', { level: 'warn', message: `⚠️ [Page ${pageNum}] [${blockErr.code}] BLOCAGE DÉTECTÉ (${reason}) — tentative de résolution interactive...` });
+            this.journal.recordBlock(targetUrl, typeof httpStatus === 'number' ? httpStatus : null);
 
             // Au lieu d'abandonner, on tente une résolution interactive :
             // ferme le contexte HAR, ouvre une fenêtre visible, puis relance
@@ -459,8 +535,9 @@ class HarCapturer extends EventEmitter {
             // persiste la session, puis ferme. Si résolu, on relance la capture.
             this.emit('log', { level: 'info', message: '[capture] Ouverture fenêtre de résolution CAPTCHA (pendant la capture)...' });
             const retryBrowser = await chromium.launch(this._launchOptions(true));
+            let retryWarmup = null;
             try {
-              await this._warmupSession(retryBrowser, buildPageUrl(searchUrl, pageNum));
+              retryWarmup = await this._warmupSession(retryBrowser, buildPageUrl(searchUrl, pageNum));
             } finally {
               await retryBrowser.close().catch(() => {});
             }
@@ -470,10 +547,18 @@ class HarCapturer extends EventEmitter {
               return outputHarPath;
             }
 
+            // Si la résolution interactive n'a pas validé l'accès, on ARRÊTE :
+            // relancer la capture relancerait une fenêtre CAPTCHA en boucle.
+            if (retryWarmup && retryWarmup.verified === false) {
+              this.emit('log', { level: 'warn', message: `[capture] Résolution non validée (${retryWarmup.reason}) — arrêt de la capture (pas de boucle CAPTCHA).` });
+              fatalError = new Error(`Accès non validé (${retryWarmup.reason}) : arrêt de la capture.`);
+              break;
+            }
+
             // Relance le navigateur et le contexte HAR, puis reprend à la page bloquée.
             browser = await chromium.launch(this._launchOptions(true));
             const retryCtxOpts = this._baseContextOptions({
-              recordHar: { path: outputHarPath, mode: 'full', urlFilter: /recherche|api|items/i },
+              recordHar: { path: activeHarPath, mode: 'full', urlFilter: /recherche|api|items/i },
             });
             if (fs.existsSync(GLOBAL_SESSION_PATH)) {
               retryCtxOpts.storageState = GLOBAL_SESSION_PATH;
@@ -482,13 +567,55 @@ class HarCapturer extends EventEmitter {
             ({ ctx: context, p: page } = await this._newStealthContext(browser, retryCtxOpts));
             this.emit('log', { level: 'info', message: `[capture] Reprise après résolution CAPTCHA — page ${pageNum}.` });
             // Ne pas retry cette page dans la boucle : on la capture à nouveau.
+            this.journal.recordNavigation();
             const retryResp = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch((e) => {
               this.emit('log', { level: 'warn', message: `[Page ${pageNum}] Reprise échouée : ${e.message}` });
             });
             const retryStatus = retryResp ? retryResp.status() : '?';
             this.emit('log', { level: 'debug', message: `[Page ${pageNum}] Reprise — HTTP ${retryStatus}.` });
+            this.journal.recordPageResult(typeof retryStatus === 'number' && retryStatus < 400);
+          } else {
+            // Page non bloquée : détection d'une page de résultats VIDE (HTTP 200
+            // sans annonces → soft-block/erreur HTML) et d'une boucle de pagination.
+            const emptyCheck = await this._looksLikeEmptyResults(page);
+            if (emptyCheck.empty) {
+              if (emptyCheck.blocked) {
+                const emptyErr = createError(ErrorCodes.CAPTCHA_DETECTED, `Page de résultats vide (marqueur « ${emptyCheck.marker} ») — blocage probable`, { page: pageNum, httpStatus });
+                this.emit('log', { level: 'warn', message: `⚠️ [Page ${pageNum}] [${emptyErr.code}] Page 200 vide (marqueur « ${emptyCheck.marker} ») — blocage probable, arrêt préventif.` });
+                this.journal.recordPageResult(false);
+                break;
+              }
+              this.emit('log', { level: 'warn', message: `[Page ${pageNum}] Aucune annonce détectée sur cette page (recherche sans résultat ou fin de pagination).` });
+            }
+
+            // Boucle de pagination : signature = nombre d'annonces + 1er id/titre.
+            try {
+              const sig = await page.evaluate(() => {
+                const cards = document.querySelectorAll('a[href*="/ad/"]');
+                const first = cards[0] ? cards[0].getAttribute('href') : '';
+                return `${cards.length}|${first}`;
+              });
+              if (seenPageSignatures.has(sig)) {
+                this.emit('log', { level: 'warn', message: `[Page ${pageNum}] Contenu identique à une page déjà vue (boucle de pagination) — arrêt pour éviter des requêtes dupliquées.` });
+                this.journal.recordPageResult(false);
+                break;
+              }
+              seenPageSignatures.add(sig);
+            } catch { /* signature best-effort */ }
+
+            this.journal.recordPageResult(true);
+            // Reprise incrémentale : mémorise la dernière page réussie. En cas de
+            // blocage ultérieur, le main process peut reprendre à lastPageOk+1 sans
+            // re-capturer les pages déjà valides.
+            writeProgress(targetDir, {
+              searchUrl,
+              pagesRequested: maxPages,
+              lastPageOk: pageNum,
+              pagesOk: this.journal.pagesOk,
+            });
           }
         } catch (gotoErr) {
+          this.journal.recordError();
           this.emit('log', { level: 'warn', message: `[Page ${pageNum}] Avertissement : ${gotoErr.message}` });
           this.emit('log', { level: 'debug', message: `[capture] Détail erreur page ${pageNum} : ${describeError(gotoErr)}` });
         }
@@ -499,6 +626,10 @@ class HarCapturer extends EventEmitter {
           await sleep(minDelay + Math.random() * (maxDelay - minDelay));
         }
       }
+
+      // Une erreur fatale différée (résolution CAPTCHA non validée) doit
+      // interrompre la capture AVANT la finalisation/sauvegarde de session.
+      if (fatalError) throw fatalError;
 
       this.emit('log', { level: 'info', message: 'Finalisation et sauvegarde de la session...' });
       await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
@@ -513,6 +644,22 @@ class HarCapturer extends EventEmitter {
       await browser.close();
       browser = null;
       this.emit('log', { level: 'info', message: `✅ Session synchronisée.` });
+
+      // Bilan réseau structuré (compteurs objectifs, sans heuristique de texte).
+      const j = this.journal.snapshot();
+      this.emit('log', { level: 'info', message: `[NET_JOURNAL] navigations=${j.navigations} pages_ok=${j.pagesOk} pages_failed=${j.pagesFailed} blocked=${j.blockedRequests} errors=${j.otherErrors}` });
+      this.emit('log', { level: 'debug', message: `[capture] Journal réseau : ${JSON.stringify(j)}` });
+
+      // Reprise : fusionne le HAR de reprise (pages startPage..N) avec le HAR
+      // précédent (pages 1..startPage-1) → outputHarPath contient toutes les pages.
+      if (isResume) {
+        try {
+          const merged = mergeHarFiles([outputHarPath, resumeHarPath], outputHarPath);
+          this.emit('log', { level: 'info', message: `🔗 HAR de reprise fusionné : ${merged.sources} source(s), ${merged.entries} entrée(s).` });
+        } catch (e) {
+          this.emit('log', { level: 'warn', message: `[capture] Fusion HAR impossible : ${e.message} — le HAR de reprise reste séparé (${resumeHarPath}).` });
+        }
+      }
 
       // Diagnostic final : taille du HAR généré
       if (fs.existsSync(outputHarPath)) {
