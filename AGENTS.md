@@ -91,8 +91,10 @@ presets mettent des délais de base trop faibles, le backoff après blocage est
 lui aussi minuscule** (ex. base 50 ms → backoff max 250 ms), ce qui ne freine
 rien face à une limitation de débit.
 
-- Presets actuels : `moyen {8, 1500, 4000}`, `rapide {10, 1000, 3000}`,
-  `ultra-rapide {12, 700, 2500}` (`{concurrency, minDelayMs, maxDelayMs}`).
+- Presets actuels (source unique : `src/main/config/scraping.js` → `SPEED_PRESETS`) :
+  `moyen {10, 500, 1000}`, `rapide {15, 200, 600}`, `ultra-rapide {25, 50, 300}`
+  (`{concurrency, minDelayMs, maxDelayMs}`). Le pipeline les consomme via
+  `getSpeedPreset()` — ne PAS redupliquer ces valeurs ailleurs.
 - Le backoff saute directement à `base × 2^max(N,4)` (×16) dès le premier
   blocage — cf. commit de diagnostic 403.
 - `Retry-After` (429) est appliqué comme **pause inter-batch**
@@ -100,6 +102,33 @@ rien face à une limitation de débit.
 - Le commit `a861165` (« restore fast parallel scraping ») avait remonté la
   concurrence à 25 et baissé les délais à 50 ms → **régression de débit** à ne
   pas reproduire.
+
+## Fiabilité : signaux structurés, reprise, anti-boucles
+
+- **Arrêt d'enrichissement structuré** : `CircuitBreaker` (machine
+  `normal → slowed → blocked → stopped`) remplace les compteurs dispersés. Au
+  seuil `BLOCK_THRESHOLD` (config/scraping.js) de blocages CONSÉCUTIFS, le
+  pipeline émet une ligne machine-lisible
+  `[STOP_REASON] code=… status=… reason=… consecutiveBlocks=…` puis sort en
+  code `3` (403) / `4` (429). `ipcHandlers` détecte ce signal — **ne PAS
+  revenir aux heuristiques de texte** (`msg.includes('interrompu') ||
+  msg.includes('restreint')`) qui déclenchaient des faux « succès partiels »
+  sur les messages de détection CAPTCHA.
+- **Journal réseau** : `NetworkJournal` compte navigations / requêtes détail /
+  403-429 (avec URLs) / erreurs ; `harCapturer` émet `[NET_JOURNAL] …` et le
+  pipeline écrit `report.json` (durées par phase + circuit + journal) dans
+  `<jobDir>/results/`.
+- **Reprise incrémentale** : `harCapturer` persiste `capture-progress.json`
+  (`lastPageOk`) après chaque page réussie ; en reprise il écrit un HAR séparé
+  puis le fusionne (`captureState.mergeHarFiles`) — un blocage page 7/10 ne perd
+  plus les pages 1-6. Option `resumeFrom` + auto-reprise depuis le fichier.
+- **Anti-boucles** : le pré-check CAPTCHA renvoie `{ verified }` ; si l'accès
+  n'est PAS validé on ARRÊTE (plus de fenêtres CAPTCHA en boucle). Garde-fou de
+  pagination (signature de page déjà vue) et détection de page 200 vide
+  (`_looksLikeEmptyResults` → soft-block).
+- **Config partagée** : `src/main/config/scraping.js` (presets, seuils, états,
+  `MAX_PAGES`) et `sessionPaths.js` n'importent PAS `electron` → importables par
+  le pipeline forké. Le main transmet `--base-out-dir` au fork.
 
 ## Compteurs de session (résumé) — motifs exacts
 
@@ -143,10 +172,16 @@ widgetPreload.js             preload dédié au widget flottant
 core/ipcHandlers.js          TOUS les handlers IPC (job, fichiers, secrets, config)
 core/settings.js             persistance user-settings.json
 config/constants.js          BASE_OUT_DIR, JOBS_DIR, GLOBAL_SESSION_PATH, THEMES (require electron/app)
+config/scraping.js           presets de vitesse + seuils + états disjoncteur (SANS electron,
+                             importable par le pipeline forké) — source unique partagée
 services/scraping/           harCapturer (Playwright) + pipelineRunner (fork) + leboncoin-pipeline
                              + adFields.js (extracteurs centralisés — SCRAPING PUR)
                              + errorCodes.js (codes d'erreurs structurés)
                              + userAgents.js (10 UA réalistes)
+                             + circuitBreaker.js (disjoncteur normal→slowed→blocked→stopped)
+                             + networkJournal.js (compteurs réseau objectifs par job)
+                             + captureState.js (progression par page + fusion HAR, reprise)
+                             + sessionPaths.js (résolution centralisée des sessions)
 services/exporting/          exportFields.js (champs exportables + filtrage + TXT lisible)
                              dataProfiles.js (3 profils : Défaut/Maximum/Personnalisé)
 services/analysis/adStats.js statistiques de prix brutes (sans scoring)

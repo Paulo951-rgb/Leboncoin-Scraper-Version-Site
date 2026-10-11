@@ -11,9 +11,11 @@
        fonctionne même si un CDN est bloqué/indisponible). Seules les données
        réseau légitimes restent autorisées : géocodage (geo.api.gouv.fr), API
        Leboncoin et tuiles OpenStreetMap.
-       Note: 'unsafe-inline' est conservé car l'UI génère des onclick dynamiques
-       via innerHTML. Une migration vers addEventListener reste souhaitable. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data:; connect-src 'self' https:; frame-src 'self';">
+       Thème 6 : 'unsafe-inline' a été RETIRÉ de script-src. Les interactions
+       passent désormais par des attributs data-action + un listener délégué
+       (aucun script inline, aucun onclick généré). style-src conserve
+       'unsafe-inline' (styles inline d'usage courant : masquage, barres). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data:; connect-src 'self' https:; frame-src 'self';">
   <script src="vendor/chart.umd.min.js"></script>
   <!-- Leaflet.js pour la Carte Interactive (bibliothèque locale embarquée) -->
   <link rel="stylesheet" href="vendor/leaflet.css" />
@@ -224,6 +226,20 @@
             <div id="progressBar" class="progress-bar" style="width: 0%;"></div>
           </div>
         </div>
+
+        <!-- BANDEAU D'ERREUR ACTIONNABLE (Thème 5) : affiché sur refus 403/429,
+             erreur fatale ou succès partiel, avec accès direct aux logs. -->
+        <div id="scrapeErrorBanner" class="scrape-error-banner hidden" role="alert">
+          <span id="scrapeErrorIcon" class="scrape-error-icon">⚠️</span>
+          <div class="scrape-error-body">
+            <strong id="scrapeErrorTitle">Problème détecté</strong>
+            <p id="scrapeErrorMessage" class="scrape-error-msg"></p>
+          </div>
+          <div class="scrape-error-actions">
+            <button id="scrapeErrorLogsBtn" class="btn btn-small btn-secondary" type="button">Voir les logs</button>
+            <button id="scrapeErrorCloseBtn" class="btn-close" type="button" title="Fermer">&times;</button>
+          </div>
+        </div>
       </section>
 
       <!-- PAGE LOGS -->
@@ -241,6 +257,7 @@
               <button id="logModeToggleBtn" class="btn btn-small btn-secondary" title="Basculer entre mode normal (logs principaux) et mode Debug (tous les logs détaillés)">🩻 Mode normal</button>
               <button id="autoScrollToggleBtn" class="btn btn-small btn-secondary active" title="Activer/désactiver le défilement automatique">⬇ Auto-scroll ON</button>
               <button id="copyLogsBtn" class="btn btn-small btn-secondary" title="Copier tous les logs affichés">📋 Copier</button>
+              <button id="exportLogsBtn" class="btn btn-small btn-secondary" title="Enregistrer les logs affichés dans un fichier .log">💾 Exporter</button>
               <button id="clearLogsBtn" class="btn btn-small">Vider</button>
             </div>
           </div>
@@ -784,6 +801,21 @@
       </div>
     </div>
   </div>
+
+  <!-- MODAL CONFIRMATION GÉNÉRIQUE (Thème 5) — remplace window.confirm() -->
+  <div id="askModal" class="modal-overlay hidden">
+    <div class="modal-card" style="max-width:440px;">
+      <h3 id="askModalTitle">Confirmation</h3>
+      <p id="askModalMessage"></p>
+      <div class="modal-actions">
+        <button id="askModalCancelBtn" class="btn btn-secondary" type="button">Annuler</button>
+        <button id="askModalConfirmBtn" class="btn btn-primary" type="button">Confirmer</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- CONTENEUR DE NOTIFICATIONS (toasts) — remplace les alert() natifs (Thème 5) -->
+  <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
 
   <script src="helpModule.js"></script>
   <script src="appState.js"></script>

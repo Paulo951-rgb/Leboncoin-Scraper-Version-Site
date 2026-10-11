@@ -212,9 +212,9 @@ function renderPresets() {
   presetsRow.innerHTML = presets
     .map(
       (p, i) => `
-    <div class="preset-chip" onclick="loadPreset(${i})">
+    <div class="preset-chip" data-action="loadPreset" data-id="${i}">
       📌 ${escapeHtml(p.name)}
-      <span style="color:#ef4444; margin-left:4px;" onclick="event.stopPropagation(); deletePreset(${i})">✕</span>
+      <span style="color:#ef4444; margin-left:4px;" data-action="deletePreset" data-id="${i}">✕</span>
     </div>
   `
     )
@@ -262,7 +262,7 @@ function closePresetModal() {
 
 savePresetBtn.addEventListener('click', () => {
   const cfg = collectSearchConfig();
-  if (!cfg.searchUrl) return alert('Veuillez entrer une URL de recherche.');
+  if (!cfg.searchUrl) return showToast('Veuillez entrer une URL de recherche.', 'warn');
   if (!presetModal || !presetNameInput) return;
   presetNameInput.value = 'Ma Recherche';
   presetModal.classList.remove('hidden');
@@ -328,7 +328,7 @@ window.toggleCompare = (adId) => {
 };
 
 openCompareModalBtn.addEventListener('click', () => {
-  if (compareSet.size === 0) return alert('Sélectionnez au moins 1 annonce avec les cases ☑️ pour comparer.');
+  if (compareSet.size === 0) return showToast('Sélectionnez au moins 1 annonce avec les cases ☑️ pour comparer.', 'warn');
 
   const seenIds = new Set();
   const selectedAds = [];
@@ -355,7 +355,7 @@ openCompareModalBtn.addEventListener('click', () => {
         <strong>${escapeHtml(a.title || a.titre || 'Sans titre')}</strong>
         <div style="font-size:1.2rem; font-weight:bold; color:var(--primary-color);">${escapeHtml(priceText)}</div>
         <div style="font-size:0.8rem;">Vendeur : ${escapeHtml(sellerName)}</div>
-        <button class="btn btn-primary btn-small" onclick="openUrl('${escapePath(a.url)}')">🔗 Voir Leboncoin</button>
+        <button class="btn btn-primary btn-small" data-action="openUrl" data-url="${escapeHtml(a.url)}">🔗 Voir Leboncoin</button>
       </div>
     `;
     })
@@ -438,11 +438,16 @@ saveSettingsBtn.addEventListener('click', async () => {
     logRetentionDays: parseInt(cfgLogRetention.value, 10) || 7,
   });
   settingsModal.classList.add('hidden');
-  alert('Paramètres enregistrés avec succès !');
+  showToast('Paramètres enregistrés avec succès !', 'success');
 });
 
 resetSettingsBtn.addEventListener('click', async () => {
-  if (!confirm('Réinitialiser tous les paramètres aux valeurs par défaut ?')) return;
+  const ok = await askConfirm({
+    title: 'Réinitialiser les paramètres',
+    message: 'Réinitialiser tous les paramètres aux valeurs par défaut ?',
+    confirmLabel: 'Réinitialiser',
+  });
+  if (!ok) return;
   localStorage.setItem('app-theme', 'theme-dark');
   document.body.className = 'theme-dark';
   await window.api.saveConfig({
@@ -455,18 +460,18 @@ resetSettingsBtn.addEventListener('click', async () => {
     logRetentionDays: 7,
   });
   applySettingsToUI({ scrapeSpeed: 'moyen', pageDelayMs: 1000, headless: true, includeSellerData: true, autoCleanHarDays: 7, autoCleanJobsDays: 0, logRetentionDays: 7 });
-  alert('Paramètres réinitialisés.');
+  showToast('Paramètres réinitialisés.', 'success');
 });
 
 // Start / Stop
 startBtn.addEventListener('click', () => {
   if (isOffline) {
-    alert('📶 Mode hors-ligne actif. Vous pouvez consulter les jobs déjà scrapés dans l\'onglet Historique, mais le scraping nécessite une connexion à Leboncoin.');
+    showToast('📶 Mode hors-ligne actif. Consultez les jobs déjà scrapés dans l\'onglet Historique ; le scraping nécessite une connexion à Leboncoin.', 'warn', { duration: 7000 });
     return;
   }
   const searchUrl = document.getElementById('searchUrl').value.trim();
   if (!searchUrl) {
-    alert('Veuillez entrer une URL de recherche Leboncoin valide.');
+    showToast('Veuillez entrer une URL de recherche Leboncoin valide.', 'warn');
     return;
   }
 
@@ -492,6 +497,8 @@ startBtn.addEventListener('click', () => {
   // (aucun code ne le masquait) et donnait une fausse alerte sur les runs OK.
   const structureWarningEl = document.getElementById('structureWarning');
   if (structureWarningEl) structureWarningEl.classList.add('hidden');
+  // Masque aussi le bandeau d'erreur actionnable du run précédent (Thème 5).
+  hideScrapeError();
 
   window.api.startScraping(config);
 });
@@ -499,6 +506,15 @@ startBtn.addEventListener('click', () => {
 stopBtn.addEventListener('click', () => {
   window.api.stopScraping();
   stopBtn.disabled = true;
+});
+
+// Bandeau d'erreur : bouton « Voir les logs » → bascule sur l'onglet Logs,
+// bouton fermer → masque le bandeau. Câblés une seule fois ici.
+document.getElementById('scrapeErrorLogsBtn')?.addEventListener('click', () => {
+  document.querySelector('[data-tab="tab-logs"]')?.click();
+});
+document.getElementById('scrapeErrorCloseBtn')?.addEventListener('click', () => {
+  hideScrapeError();
 });
 
 window.api.onProgress(({ percent, status, eta }) => {
@@ -532,6 +548,36 @@ window.api.onStatusChange(({ state, message }) => {
     // été sauvegardées même si l'enrichissement a été bloqué.
     if (state === 'completed' || state === 'partial') {
       refreshActiveDataTab();
+    }
+
+    // Bandeau d'erreur actionnable : les états non nominaux affichent un
+    // message persistant avec accès direct aux logs (au lieu d'un alert()
+    // transitoire). Le succès complet et l'annulation utilisateur n'affichent
+    // pas de bandeau (ce ne sont pas des erreurs).
+    if (state === 'refused') {
+      showScrapeError({
+        type: 'error',
+        title: 'Accès refusé par le site (HTTP 403)',
+        message: message || 'Le site a refusé l\'accès. Consultez les logs, puis réessayez plus tard.',
+      });
+    } else if (state === 'rate_limited') {
+      showScrapeError({
+        type: 'error',
+        title: 'Trop de requêtes (HTTP 429)',
+        message: message || 'Le site limite temporairement les requêtes. Attendez avant de relancer.',
+      });
+    } else if (state === 'partial') {
+      showScrapeError({
+        type: 'warn',
+        title: 'Succès partiel',
+        message: message || 'Des annonces ont été sauvegardées, mais la collecte est incomplète.',
+      });
+    } else if (state === 'error') {
+      showScrapeError({
+        type: 'error',
+        title: 'Erreur de scraping',
+        message: message || 'Le scraping a échoué. Consultez les logs pour le détail.',
+      });
     }
   }
   // Transmet au widget flottant (si ouvert)

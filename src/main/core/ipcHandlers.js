@@ -24,6 +24,18 @@ function setupIpcHandlers(getMainWindow) {
   // pipeline forké s'arrêtent proprement.
   let activeCancel = null;
 
+  // Identifiant de corrélation du job courant : attaché à chaque log/statut pour
+  // permettre de filtrer/regrouper les lignes d'un même run (utile quand
+  // plusieurs sessions se succèdent dans la même console).
+  let currentJobId = null;
+
+  // Niveau de log minimal transmis au renderer (configurable). Le pipeline
+  // continue de tout émettre ; on filtre au niveau du pont IPC pour éviter de
+  // saturer la console avec des logs debug en production.
+  const LOG_LEVEL_RANK = { debug: 10, info: 20, warn: 30, error: 40 };
+  let currentLogLevel = 'debug';
+  const isLogVisible = (level) => (LOG_LEVEL_RANK[level] || 20) >= (LOG_LEVEL_RANK[currentLogLevel] || 10);
+
   // Getter de fenêtre principale : renvoie null si détruite/fermée,
   // évitant les crashes "Cannot read properties of null" sur webContents.send.
   const getWin = () => {
@@ -52,6 +64,7 @@ function setupIpcHandlers(getMainWindow) {
 
   const { logger } = require('../utils/logger');
   logger.setRetention(settings.logRetentionDays || 7);
+  currentLogLevel = settings.logLevel || 'debug';
 
   setTimeout(() => {
     StorageCleaner.cleanOldHars(settings.autoCleanHarDays || 7);
@@ -61,9 +74,12 @@ function setupIpcHandlers(getMainWindow) {
     }
   }, 3000);
 
-  const sendLog = (data) => { const w = getWin(); if (w) w.webContents.send('log', data); };
+  const sendLog = (data) => {
+    if (!isLogVisible(data.level || 'info')) return;
+    const w = getWin(); if (w) w.webContents.send('log', currentJobId ? { ...data, jobId: currentJobId } : data);
+  };
   const sendProgress = (data) => { const w = getWin(); if (w) w.webContents.send('progress', data); };
-  const sendStatus = (status) => { const w = getWin(); if (w) w.webContents.send('status', status); };
+  const sendStatus = (status) => { const w = getWin(); if (w) w.webContents.send('status', currentJobId ? { ...status, jobId: currentJobId } : status); };
 
   // ─── Suivi de session pour le résumé de fin de scraping ────────────────────
   // Les compteurs sont incrémentés au fil du job (via l'écoute des logs du
@@ -146,6 +162,7 @@ function setupIpcHandlers(getMainWindow) {
     const jobDir = path.join(JOBS_DIR, `job-${timestamp}`);
     const harPath = path.join(jobDir, 'capture.har');
     const resultsDir = path.join(jobDir, 'results');
+    currentJobId = `job-${timestamp}`;
 
     sendLog({ level: 'debug', message: `[job:start] Config reçue — searchUrl=${searchUrl} | pages=${pages} | noDesc=${noDesc} | limit=${limit ?? '(aucun)'} | proxy=${proxyUrl || 'aucun'}` });
     sendLog({ level: 'debug', message: `[job:start] Dossiers — jobDir=${jobDir} | harPath=${harPath} | resultsDir=${resultsDir}` });
@@ -213,10 +230,18 @@ function setupIpcHandlers(getMainWindow) {
         else if (level === 'debug') sessionStats.debugs++;
         // Extraction des métriques depuis les logs du pipeline
         const msg = data.message || '';
-        // 🟢 FIX : Détection d'interruption élargie (prend en compte "interrompu" et "restreint")
-        if (msg.includes('interrompu') || msg.includes('restreint')) {
+        // Signal d'arrêt STRUCTURÉ (machine-lisible) émis par le pipeline :
+        //   « [STOP_REASON] code=HTTP_403 status=403 reason=access_refused consecutiveBlocks=3 »
+        // Remplace les heuristiques de texte fragiles ("interrompu"/"restreint")
+        // qui pouvaient déclencher un faux « succès partiel » sur un simple
+        // message de détection CAPTCHA (le mot "restreint" apparaît dans les
+        // marqueurs de détection, pas forcément dans une vraie restriction).
+        const stopMatch = msg.match(/\[STOP_REASON\]\s+code=(\S+)\s+status=(\S*)\s+reason=(\S+)/);
+        if (stopMatch) {
           stoppedEarly = true;
           sessionStats.stoppedEarly = true;
+          sessionStats.accessBlocked = true;
+          sessionStats.accessCode = /429/.test(stopMatch[1]) ? 'HTTP_RATE_LIMITED' : 'HTTP_ACCESS_REFUSED';
         }
         // Compter les annonces extraites. Le pipeline émet :
         //   « Étape HAR -> Annonces terminée : N annonces extraites. » (info)
@@ -266,6 +291,9 @@ function setupIpcHandlers(getMainWindow) {
         speed: userSettings.scrapeSpeed || 'moyen',
         headless: userSettings.headless !== false,
         userAgent: captureUserAgent,
+        // BASE_OUT_DIR : le pipeline forké n'a pas accès à electron → on lui
+        // transmet le chemin pour qu'il localise la session globale.
+        baseOutDir: BASE_OUT_DIR,
         // Profil de données (Défaut / Maximum / Personnalisé) : liste concrète de
         // clés de champs à exporter, appliquée par le pipeline (JSON + TXT).
         profileId: resolvedProfileId,
@@ -371,6 +399,7 @@ function setupIpcHandlers(getMainWindow) {
       activeCapturer = null;
       activeRunner = null;
       activeCancel = null;
+      currentJobId = null;
     }
   });
 
@@ -439,24 +468,68 @@ function setupIpcHandlers(getMainWindow) {
   });
 
   ipcMain.handle('config:save', async (event, patch) => {
-    return saveSettings(patch);
+    const merged = saveSettings(patch);
+    if (merged && merged.logLevel) currentLogLevel = merged.logLevel;
+    return merged;
+  });
+
+  // 💾 Export des logs de session vers un fichier texte (dans BASE_OUT_DIR/logs).
+  // Le renderer envoie le texte déjà formaté ; le main choisit le chemin (jamais
+  // fourni par le renderer) pour éviter toute écriture arbitraire.
+  ipcMain.handle('logs:export', async (event, text) => {
+    const safeText = typeof text === 'string' ? text : '';
+    if (!safeText.trim()) return { ok: false, error: 'Aucun log à exporter.' };
+    const logsDir = path.join(BASE_OUT_DIR, 'logs');
+    fs.mkdirSync(logsDir, { recursive: true });
+    const ts = new Date().toISOString().replace(/[:.]/g, '-');
+    const outPath = path.join(logsDir, `session-export-${ts}.log`);
+    fs.writeFileSync(outPath, safeText, 'utf8');
+    return { ok: true, path: outPath };
   });
 
   // 🔐 Secrets chiffrés (clés API stockées via safeStorage, pas en clair)
+  // Liste blanche des clés : un renderer compromis (XSS) ne peut PAS exiger le
+  // déchiffrement d'un secret arbitraire. La lecture d'une valeur en clair est
+  // réservée aux clés effectivement consommées par l'UI. `secret:get` reste
+  // sinon exposé et renverrait n'importe quelle valeur déchiffrée.
+  const SECRET_GET_ALLOWLIST = new Set(['tavily-api-key', 'search-api-key']);
+  const SECRET_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+  const isAllowedSecretKey = (key) => typeof key === 'string' && SECRET_KEY_RE.test(key);
   ipcMain.handle('secret:get', async (event, key) => {
+    if (!isAllowedSecretKey(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:get refusé (clé invalide) : ${String(key).slice(0, 40)}` });
+      return null;
+    }
+    if (!SECRET_GET_ALLOWLIST.has(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:get refusé (clé hors liste blanche) : ${key}` });
+      return null;
+    }
     const { SecretStore } = require('../utils/secretStore');
     return SecretStore.get(key);
   });
-  ipcMain.handle('secret:set', async (event, { key, value }) => {
+  ipcMain.handle('secret:set', async (event, { key, value } = {}) => {
+    if (!isAllowedSecretKey(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:set refusé (clé invalide) : ${String(key).slice(0, 40)}` });
+      return false;
+    }
+    if (value != null && typeof value !== 'string') {
+      sendLog({ level: 'warn', message: `[security] secret:set refusé (valeur non textuelle) : ${key}` });
+      return false;
+    }
     const { SecretStore } = require('../utils/secretStore');
     SecretStore.set(key, value);
     return true;
   });
   ipcMain.handle('secret:has', async (event, key) => {
+    if (!isAllowedSecretKey(key)) return false;
     const { SecretStore } = require('../utils/secretStore');
     return SecretStore.get(key) != null;
   });
   ipcMain.handle('secret:remove', async (event, key) => {
+    if (!isAllowedSecretKey(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:remove refusé (clé invalide) : ${String(key).slice(0, 40)}` });
+      return false;
+    }
     const { SecretStore } = require('../utils/secretStore');
     SecretStore.remove(key);
     return true;

@@ -146,6 +146,15 @@ function createWindow() {
     }
   });
 
+  // Refus par défaut de TOUTES les permissions navigateur (géolocalisation,
+  // caméra, micro, notifications, presse-papiers en lecture, etc.). L'UI n'en
+  // a besoin d'aucune : le scraped content est affiché, jamais exécuté, et les
+  // éventuels accès passent par le main process. Sans handler explicite,
+  // Electron accorde certaines permissions par défaut.
+  const denyPermission = () => false;
+  mainWindow.webContents.session.setPermissionRequestHandler((_wc, _perm, cb) => cb(false));
+  mainWindow.webContents.session.setPermissionCheckHandler(denyPermission);
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });

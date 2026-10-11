@@ -311,7 +311,7 @@ async function renderMap(ads) {
           <span style="color:var(--primary-color); font-weight:bold;">${a.prix != null ? a.prix + ' €' : (a.price != null ? a.price + ' €' : '-')}</span><br>
           📍 ${escapeHtml(a.city || 'Ville')}<br>
           ${deliveryTxt}<br>
-          <a href="#" onclick="openUrl('${escapePath(a.url)}'); return false;" style="color:#38bdf8; text-decoration:underline;">Ouvrir l'annonce</a>
+          <a href="#" data-action="openUrl" data-url="${escapeHtml(a.url)}" style="color:#38bdf8; text-decoration:underline;">Ouvrir l'annonce</a>
         </div>
       `);
       mapMarkerLayer.addLayer(marker);

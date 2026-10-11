@@ -7,12 +7,32 @@ const logStats = document.getElementById('logStats');
 const autoScrollToggleBtn = document.getElementById('autoScrollToggleBtn');
 const logModeToggleBtn = document.getElementById('logModeToggleBtn');
 const copyLogsBtn = document.getElementById('copyLogsBtn');
+const exportLogsBtn = document.getElementById('exportLogsBtn');
 const clearLogsBtn = document.getElementById('clearLogsBtn');
+
+// Construit le texte des logs visibles (mode courant), réutilisé par Copier/Exporter.
+function _buildVisibleLogText() {
+  const lines = [];
+  for (const entry of _logBuffer) {
+    if (!_logLevelVisible(entry.level)) continue;
+    lines.push(`[${entry.time}] [${(entry.level || 'info').toUpperCase()}] ${entry.message}`);
+  }
+  return lines.join('\n');
+}
 
 function _logLevelVisible(level) {
   if (_logMode === 'debug') return true;
   // Mode normal : on cache les logs debug, on garde info/warn/error
   return level !== 'debug';
+}
+
+// Compteur de lignes visibles maintenu de façon INCRÉMENTALE (Thème 7 perf).
+// Avant, chaque log entrant recalculait `_logBuffer.filter(_logLevelVisible)`
+// → O(n) par log, donc O(n²) sur une session de plusieurs milliers de lignes.
+let _visibleLogCount = 0;
+
+function _updateLogStats() {
+  if (logStats) logStats.textContent = `${_visibleLogCount} log(s) affiché(s) / ${_logBuffer.length} total`;
 }
 
 function _renderLogs() {
@@ -31,14 +51,21 @@ function _renderLogs() {
   }
   logsConsole.innerHTML = '';
   logsConsole.appendChild(frag);
-  if (logStats) logStats.textContent = `${visibleCount} log(s) affiché(s) / ${_logBuffer.length} total`;
+  _visibleLogCount = visibleCount;
+  _updateLogStats();
   if (_autoScroll) logsConsole.scrollTop = logsConsole.scrollHeight;
 }
 
 window.api.onLog(({ level, message }) => {
-  _logBuffer.push({ level: level || 'info', message, time: new Date().toLocaleTimeString() });
-  // Plafond mémoire
-  while (_logBuffer.length > MAX_LOG_BUFFER) _logBuffer.shift();
+  const lvl = level || 'info';
+  _logBuffer.push({ level: lvl, message, time: new Date().toLocaleTimeString() });
+  // Plafond mémoire : on décrémente le compteur visible si la ligne évincée
+  // était visible dans le mode courant.
+  while (_logBuffer.length > MAX_LOG_BUFFER) {
+    const evicted = _logBuffer.shift();
+    if (_logLevelVisible(evicted.level)) _visibleLogCount--;
+  }
+  if (_logLevelVisible(lvl)) _visibleLogCount++;
 
   // Détection d'avertissement de changement de structure Leboncoin
   if (message && message.includes('detectStructureChanges') && level === 'warn') {
@@ -52,17 +79,14 @@ window.api.onLog(({ level, message }) => {
 
   // Si le log n'est pas visible dans le mode actuel, on ne touche pas au DOM
   // (optimisation : pas de re-render complet pour un log caché).
-  if (!_logLevelVisible(level)) {
-    if (logStats) {
-      const vis = _logBuffer.filter((e) => _logLevelVisible(e.level)).length;
-      logStats.textContent = `${vis} log(s) affiché(s) / ${_logBuffer.length} total`;
-    }
+  if (!_logLevelVisible(lvl)) {
+    _updateLogStats();
     return;
   }
 
   // Ajout incrémental (plus rapide qu'un re-render complet)
   const line = document.createElement('div');
-  line.className = `log-${level || 'info'}`;
+  line.className = `log-${lvl}`;
   line.textContent = `[${new Date().toLocaleTimeString()}] ${message}`;
   logsConsole.appendChild(line);
 
@@ -73,10 +97,7 @@ window.api.onLog(({ level, message }) => {
   }
 
   if (_autoScroll) logsConsole.scrollTop = logsConsole.scrollHeight;
-  if (logStats) {
-    const vis = _logBuffer.filter((e) => _logLevelVisible(e.level)).length;
-    logStats.textContent = `${vis} log(s) affiché(s) / ${_logBuffer.length} total`;
-  }
+  _updateLogStats();
 });
 
 // Bascule auto-scroll
@@ -105,12 +126,7 @@ if (logModeToggleBtn) {
 // Copier tous les logs affichés
 if (copyLogsBtn) {
   copyLogsBtn.addEventListener('click', async () => {
-    const lines = [];
-    for (const entry of _logBuffer) {
-      if (!_logLevelVisible(entry.level)) continue;
-      lines.push(`[${entry.time}] [${(entry.level || 'info').toUpperCase()}] ${entry.message}`);
-    }
-    const text = lines.join('\n');
+    const text = _buildVisibleLogText();
     if (!text) {
       const orig = copyLogsBtn.textContent;
       copyLogsBtn.textContent = 'Rien à copier';
@@ -126,8 +142,32 @@ if (copyLogsBtn) {
       document.body.removeChild(ta);
     }
     const orig = copyLogsBtn.textContent;
-    copyLogsBtn.textContent = `✅ ${lines.length} copiés`;
+    copyLogsBtn.textContent = `✅ ${text.split('\n').length} copiés`;
     setTimeout(() => { copyLogsBtn.textContent = orig; }, 2000);
+  });
+}
+
+// Exporter les logs affichés dans un fichier .log (via le main process).
+if (exportLogsBtn) {
+  exportLogsBtn.addEventListener('click', async () => {
+    const text = _buildVisibleLogText();
+    const orig = exportLogsBtn.textContent;
+    if (!text) {
+      exportLogsBtn.textContent = 'Rien à exporter';
+      setTimeout(() => { exportLogsBtn.textContent = orig; }, 1500);
+      return;
+    }
+    try {
+      const res = await window.api.exportLogs(text);
+      if (res && res.ok) {
+        exportLogsBtn.textContent = '✅ Exporté';
+      } else {
+        exportLogsBtn.textContent = '⚠️ Échec';
+      }
+    } catch {
+      exportLogsBtn.textContent = '⚠️ Échec';
+    }
+    setTimeout(() => { exportLogsBtn.textContent = orig; }, 2500);
   });
 }
 
@@ -135,6 +175,7 @@ if (copyLogsBtn) {
 if (clearLogsBtn) {
   clearLogsBtn.addEventListener('click', () => {
     _logBuffer = [];
+    _visibleLogCount = 0;
     logsConsole.innerHTML = '';
     if (logStats) logStats.textContent = '0 log(s) affiché(s)';
   });

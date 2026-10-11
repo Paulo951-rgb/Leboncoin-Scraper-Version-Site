@@ -32,6 +32,7 @@ contextBridge.exposeInMainWorld('api', {
 
   getConfig: () => ipcRenderer.invoke('config:get'),
   saveConfig: (patch) => ipcRenderer.invoke('config:save', patch),
+  exportLogs: (text) => ipcRenderer.invoke('logs:export', text),
   getDiagnostics: () => ipcRenderer.invoke('app:getDiagnostics'),
   checkChromium: () => ipcRenderer.invoke('app:checkChromium'),
 

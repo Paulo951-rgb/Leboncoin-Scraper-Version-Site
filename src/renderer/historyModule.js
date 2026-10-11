@@ -25,12 +25,12 @@ function renderHistoryTable(jobs) {
       <td><strong>${escapeHtml(String(j.adsCount))}</strong> annonces</td>
       <td>
         <div class="file-tags">
-          ${j.files.json ? `<span class="file-tag" onclick="openFile('${escapePath(j.files.json)}')">JSON</span>` : ''}
-          ${j.files.txt ? `<span class="file-tag tag-txt" onclick="openFile('${escapePath(j.files.txt)}')">TXT</span>` : ''}
+          ${j.files.json ? `<span class="file-tag" data-action="openFile" data-id="${escapeHtml(j.files.json)}">JSON</span>` : ''}
+          ${j.files.txt ? `<span class="file-tag tag-txt" data-action="openFile" data-id="${escapeHtml(j.files.txt)}">TXT</span>` : ''}
         </div>
       </td>
       <td>
-        ${j.id ? `<span class="file-tag" onclick="askDeleteJob('${escapePath(j.id)}')">🗑</span>` : ''}
+        ${j.id ? `<span class="file-tag" data-action="askDeleteJob" data-id="${escapeHtml(j.id)}">🗑</span>` : ''}
       </td>
     </tr>
   `
@@ -91,9 +91,9 @@ openMainFolderBtn.addEventListener('click', async () => {
     // Ouvrir le dossier results/ (JOBS_DIR) qui contient les résultats du scraping
     const res = await window.api.openJobsFolder();
     if (res && res.success === false) {
-      alert('Impossible d\'ouvrir le dossier results : ' + (res.error || 'erreur inconnue'));
+      showToast('Impossible d\'ouvrir le dossier results : ' + (res.error || 'erreur inconnue'), 'error');
     }
   } catch (err) {
-    alert('Impossible d\'ouvrir le dossier results : ' + (err.message || err));
+    showToast('Impossible d\'ouvrir le dossier results : ' + (err.message || err), 'error');
   }
 });
