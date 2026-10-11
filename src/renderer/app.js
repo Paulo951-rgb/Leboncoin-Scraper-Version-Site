@@ -2,6 +2,10 @@
 const savedTheme = localStorage.getItem('app-theme') || 'theme-dark';
 document.body.className = savedTheme;
 
+// Actions déléguées (data-action) : remplace les onclick/onchange inline générés
+// par innerHTML. Câblé une seule fois, avant toute interaction utilisateur.
+installDelegatedActions();
+
 // ⚠️ ÉCRAN D'INFORMATION LÉGALE (premier lancement)
 const legalNoticeModal = document.getElementById('legalNoticeModal');
 const legalNoticeAcceptBtn = document.getElementById('legalNoticeAcceptBtn');

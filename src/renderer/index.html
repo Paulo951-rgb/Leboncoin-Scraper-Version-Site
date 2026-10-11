@@ -11,9 +11,11 @@
        fonctionne même si un CDN est bloqué/indisponible). Seules les données
        réseau légitimes restent autorisées : géocodage (geo.api.gouv.fr), API
        Leboncoin et tuiles OpenStreetMap.
-       Note: 'unsafe-inline' est conservé car l'UI génère des onclick dynamiques
-       via innerHTML. Une migration vers addEventListener reste souhaitable. -->
-  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data:; connect-src 'self' https:; frame-src 'self';">
+       Thème 6 : 'unsafe-inline' a été RETIRÉ de script-src. Les interactions
+       passent désormais par des attributs data-action + un listener délégué
+       (aucun script inline, aucun onclick généré). style-src conserve
+       'unsafe-inline' (styles inline d'usage courant : masquage, barres). -->
+  <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:; font-src 'self' data:; connect-src 'self' https:; frame-src 'self';">
   <script src="vendor/chart.umd.min.js"></script>
   <!-- Leaflet.js pour la Carte Interactive (bibliothèque locale embarquée) -->
   <link rel="stylesheet" href="vendor/leaflet.css" />

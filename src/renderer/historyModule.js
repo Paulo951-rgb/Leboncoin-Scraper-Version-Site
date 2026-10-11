@@ -25,12 +25,12 @@ function renderHistoryTable(jobs) {
       <td><strong>${escapeHtml(String(j.adsCount))}</strong> annonces</td>
       <td>
         <div class="file-tags">
-          ${j.files.json ? `<span class="file-tag" onclick="openFile('${escapePath(j.files.json)}')">JSON</span>` : ''}
-          ${j.files.txt ? `<span class="file-tag tag-txt" onclick="openFile('${escapePath(j.files.txt)}')">TXT</span>` : ''}
+          ${j.files.json ? `<span class="file-tag" data-action="openFile" data-id="${escapeHtml(j.files.json)}">JSON</span>` : ''}
+          ${j.files.txt ? `<span class="file-tag tag-txt" data-action="openFile" data-id="${escapeHtml(j.files.txt)}">TXT</span>` : ''}
         </div>
       </td>
       <td>
-        ${j.id ? `<span class="file-tag" onclick="askDeleteJob('${escapePath(j.id)}')">🗑</span>` : ''}
+        ${j.id ? `<span class="file-tag" data-action="askDeleteJob" data-id="${escapeHtml(j.id)}">🗑</span>` : ''}
       </td>
     </tr>
   `

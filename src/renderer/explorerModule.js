@@ -288,7 +288,7 @@ function renderExplorerAds() {
     adsTableBody.innerHTML = filtered
       .map((a) => {
         const isStarred = starredAds.has(String(a.id));
-        const starIcon = `<span class="star-icon ${isStarred ? 'starred' : ''}" onclick="toggleStar('${escapePath(a.id)}')">★</span>`;
+        const starIcon = `<span class="star-icon ${isStarred ? 'starred' : ''}" data-action="toggleStar" data-id="${escapeHtml(String(a.id))}">★</span>`;
         const isChecked = compareSet.has(String(a.id));
 
         const nameHtml = escapeHtml(a.title || 'Sans titre');
@@ -311,7 +311,7 @@ function renderExplorerAds() {
         const priceText = a.prix != null ? a.prix + ' €' : (a.price != null ? a.price + ' €' : '-');
         return `
         <tr>
-          <td class="text-center"><input type="checkbox" ${isChecked ? 'checked' : ''} onchange="toggleCompare('${escapePath(a.id)}')"></td>
+          <td class="text-center"><input type="checkbox" ${isChecked ? 'checked' : ''} data-action="toggleCompare" data-id="${escapeHtml(String(a.id))}"></td>
           <td class="text-center">${starIcon}</td>
           <td>${nameHtml}</td>
           <td><strong>${escapeHtml(String(priceText))}</strong></td>
@@ -320,8 +320,8 @@ function renderExplorerAds() {
           <td>${escapeHtml(a.datePublication || a.date || '-')}</td>
           <td>
             <div style="display:flex; gap:4px;">
-              <button class="btn btn-secondary btn-small" onclick="openAdDetail('${escapePath(a.id)}')">👁️ Fiche</button>
-              <button class="btn btn-secondary btn-small" onclick="openUrl('${escapePath(a.url)}')">🔗</button>
+              <button class="btn btn-secondary btn-small" data-action="openAdDetail" data-id="${escapeHtml(String(a.id))}">👁️ Fiche</button>
+              <button class="btn btn-secondary btn-small" data-action="openUrl" data-url="${escapeHtml(a.url)}">🔗</button>
             </div>
           </td>
         </tr>
@@ -340,16 +340,16 @@ function renderExplorerAds() {
         return `
         <div class="ad-card">
           <div class="ad-card-thumb-box">
-            <img src="${escapeHtml(thumbUrl)}" alt="Photo" class="ad-card-thumb" onclick="openAdDetail('${escapePath(a.id)}')">
-            <div class="ad-card-star"><span class="star-icon ${isStarred ? 'starred' : ''}" onclick="toggleStar('${escapePath(a.id)}')">★</span></div>
+            <img src="${escapeHtml(thumbUrl)}" alt="Photo" class="ad-card-thumb" data-action="openAdDetail" data-id="${escapeHtml(String(a.id))}">
+            <div class="ad-card-star"><span class="star-icon ${isStarred ? 'starred' : ''}" data-action="toggleStar" data-id="${escapeHtml(String(a.id))}">★</span></div>
           </div>
           <div class="ad-card-body">
             <div class="ad-card-title">${escapeHtml(a.title || 'Sans titre')}</div>
             <div class="ad-card-price">${escapeHtml(String(a.prix != null ? a.prix + ' €' : (a.price != null ? a.price + ' €' : '-')))}</div>
             <div class="ad-card-city">📍 ${escapeHtml(a.city || 'Inconnue')}</div>
             <div class="ad-card-footer">
-              <button class="btn btn-secondary btn-small" style="flex:1;" onclick="openAdDetail('${escapePath(a.id)}')">👁️ Fiche Détaillée</button>
-              <button class="btn btn-primary btn-small" onclick="openUrl('${escapePath(a.url)}')">🔗 Voir</button>
+              <button class="btn btn-secondary btn-small" style="flex:1;" data-action="openAdDetail" data-id="${escapeHtml(String(a.id))}">👁️ Fiche Détaillée</button>
+              <button class="btn btn-primary btn-small" data-action="openUrl" data-url="${escapeHtml(a.url)}">🔗 Voir</button>
             </div>
           </div>
         </div>
@@ -466,7 +466,7 @@ window.openAdDetail = (adId) => {
 
   galleryThumbnails.innerHTML = images
     .map(
-      (img, i) => `<img src="${escapeHtml(img)}" alt="Thumb" class="thumb-img ${i === 0 ? 'active' : ''}" onclick="switchGalleryImg('${escapePath(img)}', this)">`
+      (img, i) => `<img src="${escapeHtml(img)}" alt="Thumb" class="thumb-img ${i === 0 ? 'active' : ''}" data-action="switchGalleryImg" data-url="${escapeHtml(img)}">`
     )
     .join('');
 

@@ -137,6 +137,39 @@ function askConfirm({ title = 'Confirmation', message = '', confirmLabel = 'Conf
 }
 window.askConfirm = askConfirm;
 
+// ─── Actions déléguées (Thème 6) ────────────────────────────────────────────
+// Remplace les handlers inline (onclick="fn('…')") générés par innerHTML. Ceux-ci
+// obligeaient la CSP à autoriser 'unsafe-inline' pour les scripts et reposaient
+// sur un échappement manuel (escapePath) pour chaque valeur injectée. On utilise
+// désormais des attributs data-* + un unique listener délégué au niveau document
+// (les valeurs data-* ne sont pas du code : aucun risque d'exécution). Les
+// valeurs sont lues via dataset (déjà décodées par le parseur HTML).
+function installDelegatedActions() {
+  document.addEventListener('click', (e) => {
+    const el = e.target.closest('[data-action]');
+    if (!el) return;
+    const action = el.dataset.action;
+    const id = el.dataset.id || '';
+    const url = el.dataset.url || '';
+    switch (action) {
+      case 'openUrl': e.preventDefault(); window.openUrl(url); break;
+      case 'openAdDetail': window.openAdDetail && window.openAdDetail(id); break;
+      case 'toggleStar': window.toggleStar && window.toggleStar(id); break;
+      case 'switchGalleryImg': window.switchGalleryImg && window.switchGalleryImg(url, el); break;
+      case 'openFile': window.openFile && window.openFile(id); break;
+      case 'askDeleteJob': window.askDeleteJob && window.askDeleteJob(id); break;
+      case 'loadPreset': window.loadPreset && window.loadPreset(Number(id)); break;
+      case 'deletePreset': e.stopPropagation(); window.deletePreset && window.deletePreset(Number(id)); break;
+      default: break;
+    }
+  });
+  document.addEventListener('change', (e) => {
+    const el = e.target.closest('[data-action="toggleCompare"]');
+    if (el) window.toggleCompare && window.toggleCompare(el.dataset.id || '');
+  });
+}
+window.installDelegatedActions = installDelegatedActions;
+
 window.openFolder = async (folderPath) => {
   if (!folderPath) return;
   try {

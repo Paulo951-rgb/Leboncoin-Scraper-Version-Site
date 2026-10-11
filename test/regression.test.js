@@ -2269,7 +2269,7 @@ console.log('\n[27] Carte statsModule (logique pure)');
   assert(/href="vendor\/leaflet\.css"/.test(html), 'carte: CSS Leaflet servi localement (vendor/leaflet.css)');
   assert(/src="vendor\/chart\.umd\.min\.js"/.test(html), 'graphiques: Chart.js servi localement (vendor/chart.umd.min.js)');
   assert(!/cdn\.jsdelivr\.net|unpkg\.com/.test(html), 'CSP/HTML: plus aucune référence CDN au chargement');
-  assert(/script-src 'self' 'unsafe-inline';/.test(html) && !/script-src [^;]*https:/.test(html), 'CSP: script-src limité à self (pas de CDN)');
+  assert(/script-src 'self';/.test(html) && !/script-src [^;]*unsafe-inline/.test(html) && !/script-src [^;]*https:/.test(html), 'CSP: script-src limité à self, sans unsafe-inline (Thème 6)');
   for (const f of ['vendor/leaflet.js', 'vendor/leaflet.css', 'vendor/chart.umd.min.js',
                    'vendor/images/marker-icon.png', 'vendor/images/marker-shadow.png']) {
     assert(fs.existsSync(path.join(repoRoot, 'src/renderer', f)), `carte: ressource locale présente → ${f}`);
@@ -3151,6 +3151,91 @@ console.log('\n[37b] UX jsdom (toasts, bandeau erreur, askConfirm)');
 
 console.log('\n[37b] OK');
 
+// --- 37c. Sécurité (Thème 6) : actions déléguées data-action + CSP ---
+console.log('\n[37c] Sécurité jsdom (actions déléguées, CSP)');
+{
+  const { JSDOM } = require('jsdom');
+  const repoRoot = path.join(__dirname, '..');
+  const utilsSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/utils.js'), 'utf8');
+
+  const html = `<!doctype html><html><body>
+    <button id="btnUrl" data-action="openUrl" data-url="https://www.leboncoin.fr/ad/1">Voir</button>
+    <span id="btnStar" data-action="toggleStar" data-id="42">★</span>
+    <input id="chk" type="checkbox" data-action="toggleCompare" data-id="7">
+    <div id="chip" data-action="loadPreset" data-id="3"><span id="del" data-action="deletePreset" data-id="3">✕</span></div>
+  </body></html>`;
+  const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://app.local/' });
+  const { window } = dom;
+
+  const calls = { openUrl: [], toggleStar: [], toggleCompare: [], loadPreset: [], deletePreset: [] };
+  window.api = { openExternal: (u) => calls.openUrl.push(u), openFolder: async () => ({ success: true }), openFile: async () => ({ success: true }) };
+  window.toggleStar = (id) => calls.toggleStar.push(id);
+  window.toggleCompare = (id) => calls.toggleCompare.push(id);
+  window.loadPreset = (i) => calls.loadPreset.push(i);
+  window.deletePreset = (i) => calls.deletePreset.push(i);
+  window.eval(utilsSrc);
+  window.installDelegatedActions();
+
+  // 37c.1 openUrl : le data-url est transmis à openExternal.
+  window.document.getElementById('btnUrl').click();
+  assert(calls.openUrl.length === 1 && calls.openUrl[0] === 'https://www.leboncoin.fr/ad/1',
+    'sec: data-action=openUrl transmet data-url à openExternal');
+
+  // 37c.2 toggleStar : data-id transmis.
+  window.document.getElementById('btnStar').click();
+  assert(calls.toggleStar.length === 1 && calls.toggleStar[0] === '42',
+    'sec: data-action=toggleStar transmet data-id');
+
+  // 37c.3 toggleCompare via événement change (checkbox).
+  const chk = window.document.getElementById('chk');
+  chk.dispatchEvent(new window.Event('change', { bubbles: true }));
+  assert(calls.toggleCompare.length === 1 && calls.toggleCompare[0] === '7',
+    'sec: data-action=toggleCompare réagit au change');
+
+  // 37c.4 loadPreset : data-id converti en nombre.
+  window.document.getElementById('chip').click();
+  assert(calls.loadPreset.length === 1 && calls.loadPreset[0] === 3,
+    'sec: data-action=loadPreset convertit data-id en nombre');
+
+  // 37c.5 deletePreset : stopPropagation empêche loadPreset de se déclencher.
+  calls.loadPreset.length = 0;
+  window.document.getElementById('del').click();
+  assert(calls.deletePreset.length === 1 && calls.deletePreset[0] === 3,
+    'sec: data-action=deletePreset déclenche deletePreset');
+  assert(calls.loadPreset.length === 0,
+    'sec: deletePreset stoppe la propagation (loadPreset non déclenché)');
+
+  // 37c.6 Une valeur hostile dans data-id n'est JAMAIS exécutée (attribut, pas code).
+  let injected = false;
+  window.eval('window.__probe = () => { injected = true; };');
+  const evil = window.document.createElement('span');
+  evil.setAttribute('data-action', 'toggleStar');
+  evil.setAttribute('data-id', "1'); window.__probe(); //");
+  window.document.body.appendChild(evil);
+  calls.toggleStar.length = 0;
+  evil.click();
+  assert(calls.toggleStar.length === 1 && calls.toggleStar[0] === "1'); window.__probe(); //",
+    'sec: data-id hostile traité comme chaîne, jamais comme code');
+  assert(injected === false, 'sec: aucune exécution de code via data-*');
+
+  // 37c.7 Statique : plus aucun handler inline dans le renderer (on ignore les
+  // commentaires, qui peuvent mentionner « onclick= » à titre explicatif).
+  const files = ['utils.js', 'scraperModule.js', 'historyModule.js', 'logsModule.js', 'explorerModule.js', 'statsModule.js', 'app.js'];
+  const code = files.map((f) => fs.readFileSync(path.join(repoRoot, 'src/renderer', f), 'utf8')).join('\n')
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/(^|\s)\/\/[^\n]*/g, '$1');
+  assert(!/onclick=/.test(code), 'sec: plus de onclick= généré dans le renderer');
+  assert(!/onchange=/.test(code), 'sec: plus de onchange= généré dans le renderer');
+  const indexHtml = fs.readFileSync(path.join(repoRoot, 'src/renderer/index.html'), 'utf8');
+  const cspMeta = (indexHtml.match(/http-equiv="Content-Security-Policy" content="([^"]*)"/) || [])[1] || '';
+  assert(/script-src 'self';/.test(cspMeta) && !/script-src[^;]*unsafe-inline/.test(cspMeta),
+    'sec: CSP script-src sans unsafe-inline');
+
+  dom.window.close();
+}
+
+console.log('\n[37c] OK');
+
 // --- 38. Modules main sous-couverts : settings, logger, fileManager,
 // storageCleaner, jobHistory, ipcHandlers (invocation réelle des handlers) ---
 console.log('\n[38] Modules main (settings, logger, fileManager, storageCleaner, jobHistory, ipcHandlers)');
@@ -3317,6 +3402,25 @@ console.log('\n[38] Modules main (settings, logger, fileManager, storageCleaner,
   assert(extBad2.success === false, 'ipcHandlers: openExternal file:// refusé');
   const extEmpty = await handlers['shell:openExternal']({}, '');
   assert(extEmpty.success === false, 'ipcHandlers: openExternal URL vide refusée');
+
+  // 38.6b secrets : liste blanche de clés (Thème 6).
+  assert(typeof handlers['secret:get'] === 'function' && typeof handlers['secret:set'] === 'function',
+    'ipcHandlers: handlers secret enregistrés');
+  const setBadKey = await handlers['secret:set']({}, { key: '../evil', value: 'x' });
+  assert(setBadKey === false, 'sec: secret:set clé invalide → refusé');
+  const setBadVal = await handlers['secret:set']({}, { key: 'tavily-api-key', value: 123 });
+  assert(setBadVal === false, 'sec: secret:set valeur non textuelle → refusé');
+  const setOk = await handlers['secret:set']({}, { key: 'tavily-api-key', value: 'secret-value' });
+  assert(setOk === true, 'sec: secret:set clé valide → accepté');
+  assert((await handlers['secret:has']({}, 'tavily-api-key')) === true, 'sec: secret:has clé valide → true');
+  assert((await handlers['secret:get']({}, 'tavily-api-key')) === 'secret-value',
+    'sec: secret:get clé autorisée → valeur déchiffrée');
+  assert((await handlers['secret:get']({}, 'internal-app-key')) === null,
+    'sec: secret:get clé hors liste blanche → null (pas de fuite)');
+  assert((await handlers['secret:get']({}, 'NOT A KEY')) === null, 'sec: secret:get clé malformée → null');
+  assert((await handlers['secret:has']({}, 'x;y')) === false, 'sec: secret:has clé malformée → false');
+  await handlers['secret:remove']({}, 'tavily-api-key');
+  assert((await handlers['secret:has']({}, 'tavily-api-key')) === false, 'sec: secret:remove clé valide → supprimée');
 
   // 38.7 rateLimiter : mathématique du backoff (délais réduits pour un test
   // rapide ; `sleep` est capturé à l'import, on teste donc currentDelayMs()).

@@ -212,9 +212,9 @@ function renderPresets() {
   presetsRow.innerHTML = presets
     .map(
       (p, i) => `
-    <div class="preset-chip" onclick="loadPreset(${i})">
+    <div class="preset-chip" data-action="loadPreset" data-id="${i}">
       📌 ${escapeHtml(p.name)}
-      <span style="color:#ef4444; margin-left:4px;" onclick="event.stopPropagation(); deletePreset(${i})">✕</span>
+      <span style="color:#ef4444; margin-left:4px;" data-action="deletePreset" data-id="${i}">✕</span>
     </div>
   `
     )
@@ -355,7 +355,7 @@ openCompareModalBtn.addEventListener('click', () => {
         <strong>${escapeHtml(a.title || a.titre || 'Sans titre')}</strong>
         <div style="font-size:1.2rem; font-weight:bold; color:var(--primary-color);">${escapeHtml(priceText)}</div>
         <div style="font-size:0.8rem;">Vendeur : ${escapeHtml(sellerName)}</div>
-        <button class="btn btn-primary btn-small" onclick="openUrl('${escapePath(a.url)}')">🔗 Voir Leboncoin</button>
+        <button class="btn btn-primary btn-small" data-action="openUrl" data-url="${escapeHtml(a.url)}">🔗 Voir Leboncoin</button>
       </div>
     `;
     })

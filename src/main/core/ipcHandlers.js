@@ -488,20 +488,48 @@ function setupIpcHandlers(getMainWindow) {
   });
 
   // 🔐 Secrets chiffrés (clés API stockées via safeStorage, pas en clair)
+  // Liste blanche des clés : un renderer compromis (XSS) ne peut PAS exiger le
+  // déchiffrement d'un secret arbitraire. La lecture d'une valeur en clair est
+  // réservée aux clés effectivement consommées par l'UI. `secret:get` reste
+  // sinon exposé et renverrait n'importe quelle valeur déchiffrée.
+  const SECRET_GET_ALLOWLIST = new Set(['tavily-api-key', 'search-api-key']);
+  const SECRET_KEY_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
+  const isAllowedSecretKey = (key) => typeof key === 'string' && SECRET_KEY_RE.test(key);
   ipcMain.handle('secret:get', async (event, key) => {
+    if (!isAllowedSecretKey(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:get refusé (clé invalide) : ${String(key).slice(0, 40)}` });
+      return null;
+    }
+    if (!SECRET_GET_ALLOWLIST.has(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:get refusé (clé hors liste blanche) : ${key}` });
+      return null;
+    }
     const { SecretStore } = require('../utils/secretStore');
     return SecretStore.get(key);
   });
-  ipcMain.handle('secret:set', async (event, { key, value }) => {
+  ipcMain.handle('secret:set', async (event, { key, value } = {}) => {
+    if (!isAllowedSecretKey(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:set refusé (clé invalide) : ${String(key).slice(0, 40)}` });
+      return false;
+    }
+    if (value != null && typeof value !== 'string') {
+      sendLog({ level: 'warn', message: `[security] secret:set refusé (valeur non textuelle) : ${key}` });
+      return false;
+    }
     const { SecretStore } = require('../utils/secretStore');
     SecretStore.set(key, value);
     return true;
   });
   ipcMain.handle('secret:has', async (event, key) => {
+    if (!isAllowedSecretKey(key)) return false;
     const { SecretStore } = require('../utils/secretStore');
     return SecretStore.get(key) != null;
   });
   ipcMain.handle('secret:remove', async (event, key) => {
+    if (!isAllowedSecretKey(key)) {
+      sendLog({ level: 'warn', message: `[security] secret:remove refusé (clé invalide) : ${String(key).slice(0, 40)}` });
+      return false;
+    }
     const { SecretStore } = require('../utils/secretStore');
     SecretStore.remove(key);
     return true;
