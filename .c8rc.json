@@ -1,0 +1,17 @@
+{
+  "all": true,
+  "include": ["src/main/**/*.js"],
+  "exclude": [
+    "src/main/main.js",
+    "src/main/preload.js",
+    "src/main/widgetPreload.js"
+  ],
+  "reporter": ["text", "text-summary", "lcov"],
+  "reports-dir": "coverage",
+  "temp-directory": "coverage/.tmp",
+  "check-coverage": true,
+  "lines": 70,
+  "functions": 70,
+  "branches": 70,
+  "statements": 70
+}

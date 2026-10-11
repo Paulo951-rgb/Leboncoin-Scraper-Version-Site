@@ -2873,6 +2873,459 @@ console.log('\n[35] Intégration pipeline (fixture HAR → annonces.json)');
 
 console.log('\n[35] OK');
 
+// --- 36. Fixtures HAR réelles : extraction, dédup, blocage, page de détail ---
+// Exécute le pipeline sur des HAR synthétiques versionnés (test/fixtures/) pour
+// couvrir les cas réels : résultats multiples, doublons, 403, page vide, et le
+// parsing de la page de détail (__NEXT_DATA__).
+console.log('\n[36] Fixtures HAR (résultats, doublons, 403, page vide, détail)');
+{
+  const { execFileSync } = require('child_process');
+  const os = require('os');
+  const fixturesDir = path.join(__dirname, 'fixtures');
+  const pipelinePath = path.join(base, 'services/scraping/leboncoin-pipeline.js');
+
+  function runFixture(name, extraArgs = []) {
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), `lbc-fx-${name}-`));
+    const outDir = path.join(tmp, 'results');
+    fs.mkdirSync(outDir, { recursive: true });
+    let code = 0;
+    try {
+      execFileSync(process.execPath, [pipelinePath, path.join(fixturesDir, `${name}.har`), '--out', outDir, '--no-desc', '--fresh', ...extraArgs], { encoding: 'utf8', timeout: 60000 });
+    } catch (err) { code = err.status; }
+    const jsonPath = path.join(outDir, 'annonces.json');
+    const ads = fs.existsSync(jsonPath) ? JSON.parse(fs.readFileSync(jsonPath, 'utf8')) : null;
+    fs.rmSync(tmp, { recursive: true, force: true });
+    return { code, ads };
+  }
+
+  // 36.1 Résultats de recherche : 3 annonces, ressources non-JSON ignorées.
+  const results = runFixture('search-results');
+  assert(results.code === 0 && results.ads && results.ads.length === 3,
+    `fixtures: search-results → 3 annonces (obtenu ${results.ads ? results.ads.length : 'null'})`);
+  const guitare = results.ads && results.ads.find((a) => a.id === '222');
+  assert(guitare && guitare.vendeurType === 'pro' && guitare.prix === 80,
+    'fixtures: vendeur pro + prix numérique extraits');
+  const canape = results.ads && results.ads.find((a) => a.id === '333');
+  assert(canape && canape.deliveryType === 'main_propre',
+    'fixtures: deliveryType main_propre (pas de livraison)');
+  const velo = results.ads && results.ads.find((a) => a.id === '111');
+  assert(velo && velo.deliveryType === 'livraison' && velo.photosCount === 2,
+    'fixtures: deliveryType livraison + photosCount');
+
+  // 36.2 Doublons : même annonce dans 2 réponses JSON → 1 seule conservée.
+  const dups = runFixture('search-duplicates');
+  assert(dups.code === 0 && dups.ads && dups.ads.length === 1,
+    `fixtures: search-duplicates → 1 annonce unique (obtenu ${dups.ads ? dups.ads.length : 'null'})`);
+
+  // 36.3 Page vide (HTTP 200 sans annonce) → exit 2, pas de faux succès.
+  const empty = runFixture('search-empty');
+  assert(empty.code === 2 && empty.ads === null,
+    `fixtures: search-empty → exit 2 (aucune donnée exploitable), obtenu ${empty.code}`);
+
+  // 36.4 Blocage 403 → exit 2, aucune annonce.
+  const blocked = runFixture('search-blocked-403');
+  assert(blocked.code === 2 && blocked.ads === null,
+    `fixtures: search-blocked-403 → exit 2, obtenu ${blocked.code}`);
+
+  // 36.5 Page de détail (__NEXT_DATA__) : description + attributs enrichis.
+  const { parseHtmlDescription } = require('../src/main/services/scraping/leboncoin-pipeline');
+  const detailHtml = fs.readFileSync(path.join(fixturesDir, 'detail-page.html'), 'utf8');
+  const parsed = parseHtmlDescription(detailHtml, '111');
+  assert(parsed.description && /revision fait au printemps/.test(parsed.description),
+    'fixtures: page détail → description extraite de __NEXT_DATA__');
+  assert(parsed.etat === 'Tres bon etat',
+    `fixtures: page détail → état déclaré extrait, obtenu ${JSON.stringify(parsed.etat)}`);
+  assert(parsed.livraison === true && parsed.note === 4.5,
+    'fixtures: page détail → livraison + note vendeur enrichies');
+
+  // 36.6 Page de détail sans __NEXT_DATA__ → enrichissement vide SANS crash.
+  const noNext = fs.readFileSync(path.join(fixturesDir, 'detail-page-no-nextdata.html'), 'utf8');
+  const parsedEmpty = parseHtmlDescription(noNext, '111');
+  assert(parsedEmpty.description === null && parsedEmpty.etat === null && parsedEmpty.note === null,
+    'fixtures: page détail sans __NEXT_DATA__ → champs null (pas de crash)');
+
+  // 36.7 Détection d'annonce : structure attendue vs bruit.
+  const { looksLikeAd, findAdsIterative } = require('../src/main/services/scraping/leboncoin-pipeline');
+  assert(looksLikeAd({ list_id: 1, subject: 'X', price: [{ value: 1 }] }) === true,
+    'fixtures: looksLikeAd reconnaît une annonce');
+  assert(looksLikeAd({ foo: 'bar' }) === false, 'fixtures: looksLikeAd rejette un objet quelconque');
+  const found = findAdsIterative(JSON.parse(JSON.parse(fs.readFileSync(path.join(fixturesDir, 'search-results.har'), 'utf8')).log.entries[2].response.content.text));
+  assert(found.length === 3, `fixtures: findAdsIterative trouve 3 annonces dans le JSON (obtenu ${found.length})`);
+}
+
+console.log('\n[36] OK');
+
+// --- 37. Tests DOM (jsdom) : logsModule + utils, dans un vrai DOM ---
+// Charge les modules renderer réels dans un DOM jsdom (pas de stub manuel) pour
+// vérifier le rendu, le filtrage rétroactif, les boutons et l'échappement XSS.
+console.log('\n[37] DOM jsdom (logsModule, utils)');
+{
+  const { JSDOM } = require('jsdom');
+  const repoRoot = path.join(__dirname, '..');
+
+  const html = `<!doctype html><html><body>
+    <div class="logs-toolbar">
+      <button id="logModeToggleBtn">mode</button>
+      <button id="autoScrollToggleBtn">scroll</button>
+      <button id="copyLogsBtn">copy</button>
+      <button id="exportLogsBtn">export</button>
+      <button id="clearLogsBtn">clear</button>
+    </div>
+    <div id="logsConsole" class="console"></div>
+    <div id="logStats"></div>
+    <div id="structureWarning" class="hidden"><span id="structureWarningText"></span></div>
+  </body></html>`;
+
+  const dom = new JSDOM(html, { runScripts: 'outside-only', pretendToBeVisual: true, url: 'https://app.local/' });
+  const { window } = dom;
+
+  let onLogCb = null;
+  let exportedText = null;
+  window.api = {
+    onLog: (cb) => { onLogCb = cb; },
+    exportLogs: async (t) => { exportedText = t; return { ok: true, path: '/tmp/x.log' }; },
+    openFolder: async () => ({ ok: true }),
+    openFile: async () => ({ ok: true }),
+    openExternal: () => {},
+  };
+  window.navigator.clipboard = { writeText: async () => {} };
+
+  // Charge appState (état partagé) puis logsModule dans le MÊME scope d'eval
+  // (les `let`/`const` top-level doivent être partagés entre les deux modules).
+  const appStateSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/appState.js'), 'utf8');
+  const logsSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/logsModule.js'), 'utf8');
+  window.eval(appStateSrc + '\n' + logsSrc);
+
+  assert(typeof onLogCb === 'function', 'jsdom: logsModule enregistre window.api.onLog');
+  const consoleEl = window.document.getElementById('logsConsole');
+
+  // 37.1 Un log info s'affiche ; un log debug est masqué en mode normal.
+  onLogCb({ level: 'info', message: 'démarrage du scraping' });
+  onLogCb({ level: 'debug', message: 'détail technique' });
+  let lines = [...consoleEl.children].map((c) => c.textContent);
+  assert(lines.some((l) => /démarrage du scraping/.test(l)),
+    'jsdom: log info affiché');
+  assert(!lines.some((l) => /détail technique/.test(l)),
+    'jsdom: log debug masqué en mode normal');
+
+  // 37.2 Bascule en mode debug → filtrage rétroactif : le debug apparaît.
+  window.document.getElementById('logModeToggleBtn').click();
+  lines = [...consoleEl.children].map((c) => c.textContent);
+  assert(lines.some((l) => /détail technique/.test(l)),
+    'jsdom: bascule debug → logs debug réaffichés (filtrage rétroactif)');
+  assert(window.document.getElementById('logStats').textContent.includes('total'),
+    'jsdom: compteur de logs mis à jour');
+
+  // 37.3 Bandeau de changement de structure déclenché par le log attendu.
+  onLogCb({ level: 'warn', message: 'detectStructureChanges : champ price manquant' });
+  const sw = window.document.getElementById('structureWarning');
+  assert(!sw.classList.contains('hidden'),
+    'jsdom: avertissement de structure affiché sur log detectStructureChanges');
+
+  // 37.4 Bouton Exporter → appelle window.api.exportLogs avec le texte visible.
+  window.document.getElementById('exportLogsBtn').click();
+  await new Promise((r) => setTimeout(r, 20));
+  assert(typeof exportedText === 'string' && /démarrage du scraping/.test(exportedText),
+    'jsdom: bouton Exporter transmet les logs visibles à exportLogs');
+  assert(/\[INFO\]/.test(exportedText),
+    'jsdom: texte exporté préfixé du niveau ([INFO])');
+
+  // 37.5 Bouton Vider → console + buffer vidés.
+  window.document.getElementById('clearLogsBtn').click();
+  assert(consoleEl.children.length === 0, 'jsdom: bouton Vider efface la console');
+
+  // 37.6 utils.js : échappement XSS réel exécuté dans le DOM.
+  const utilsSrc = fs.readFileSync(path.join(repoRoot, 'src/renderer/utils.js'), 'utf8');
+  window.eval(utilsSrc + '\n;window.__t = { escapeHtml, escapePath };');
+  const { escapeHtml, escapePath } = window.__t;
+  assert(escapeHtml('<script>alert(1)</script>') === '&lt;script&gt;alert(1)&lt;/script&gt;',
+    'jsdom: escapeHtml neutralise une balise script');
+  assert(escapeHtml('a"b') === 'a&quot;b', 'jsdom: escapeHtml échappe les guillemets');
+  // escapePath : double contexte HTML+JS — " devient &quot;, ' devient \'
+  const ep = escapePath(`x"y'z\\w&v`);
+  assert(ep.includes('&quot;') && ep.includes("\\'") && ep.includes('&amp;'),
+    'jsdom: escapePath échappe ", \', \\, & (double contexte)');
+  assert(!ep.includes('&amp;quot;'),
+    'jsdom: escapePath pas de double-encodage (&amp;quot;)');
+
+  dom.window.close();
+}
+
+console.log('\n[37] OK');
+
+// --- 38. Modules main sous-couverts : settings, logger, fileManager,
+// storageCleaner, jobHistory, ipcHandlers (invocation réelle des handlers) ---
+console.log('\n[38] Modules main (settings, logger, fileManager, storageCleaner, jobHistory, ipcHandlers)');
+{
+  const os = require('os');
+  const { writeWithChecksum } = require('../src/main/utils/integrity');
+
+  // 38.1 settings : validation de patch + aller-retour de persistance.
+  const settings = require('../src/main/core/settings');
+  const clean = settings.sanitizeSettingsPatch({
+    autoCleanHarDays: 30, logLevel: 'warn', scrapeSpeed: 'rapide',
+    headless: false, pageDelayMs: 2500, autoCleanJobsDays: 10,
+    logRetentionDays: 14, includeSellerData: false,
+    __injected: 'x', autoCleanJobsDays_evil: 999999,
+  });
+  assert(clean.autoCleanHarDays === 30 && clean.logLevel === 'warn' && clean.scrapeSpeed === 'rapide',
+    'settings: patch valide conservé');
+  assert(clean.headless === false && clean.pageDelayMs === 2500 && clean.includeSellerData === false,
+    'settings: booléens + pageDelay conservés');
+  assert(!('__injected' in clean) && !('autoCleanJobsDays_evil' in clean),
+    'settings: clés inconnues rejetées (anti-injection)');
+  const rejected = settings.sanitizeSettingsPatch({
+    autoCleanHarDays: -5, logLevel: 'verbose', scrapeSpeed: 'turbo',
+    pageDelayMs: 999999, headless: 'oui', logRetentionDays: 0,
+  });
+  assert(Object.keys(rejected).length === 0,
+    'settings: valeurs hors plage / hors enum rejetées');
+  assert(settings.sanitizeSettingsPatch(null) && Object.keys(settings.sanitizeSettingsPatch(null)).length === 0,
+    'settings: patch null → objet vide');
+  assert(settings.SETTINGS_DEFAULTS.logLevel === 'debug' && settings.SETTINGS_DEFAULTS.scrapeSpeed === 'moyen',
+    'settings: valeurs par défaut présentes');
+
+  const saved = settings.saveSettings({ logLevel: 'error', autoCleanJobsDays: 3 });
+  assert(saved.logLevel === 'error' && saved.autoCleanJobsDays === 3, 'settings: saveSettings renvoie le fusionné');
+  const reloaded = settings.loadSettings();
+  assert(reloaded.logLevel === 'error' && reloaded.autoCleanJobsDays === 3,
+    'settings: relecture depuis le disque (persistance)');
+  assert(reloaded.scrapeSpeed === 'moyen', 'settings: défauts préservés après fusion');
+
+  // 38.2 logger : configuration, écriture sans crash, fermeture.
+  const { logger } = require('../src/main/utils/logger');
+  logger.setRetention(0);          // clampé à 1
+  logger.setRetention('abc');      // fallback défaut
+  assert(typeof logger.getLogDir() === 'string' && logger.getLogDir().length > 0,
+    'logger: getLogDir renvoie un chemin');
+  logger.debug('test debug'); logger.info('test info'); logger.warn('test warn'); logger.error('test error');
+  logger.info({ obj: true, nested: { a: 1 } }); // safeStringify sur objet
+  logger.close();
+  assert(true, 'logger: écriture debug/info/warn/error + close sans exception');
+
+  // 38.3 fileManager : création de dossier + fichier inexistant.
+  const { FileManager } = require('../src/main/infrastructure/fileManager');
+  const fmDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-fm-'));
+  const nested = path.join(fmDir, 'a', 'b', 'c');
+  const errStr = await FileManager.openFolder(nested);
+  assert(fs.existsSync(nested) && errStr === '', 'fileManager: openFolder crée le dossier + retourne ""');
+  let threw = false;
+  try { await FileManager.openFile(path.join(fmDir, 'absent.txt')); } catch { threw = true; }
+  assert(threw, 'fileManager: openFile fichier inexistant → throw');
+  const existing = path.join(fmDir, 'present.txt');
+  fs.writeFileSync(existing, 'x');
+  const openErr = await FileManager.openFile(existing);
+  assert(openErr === '', 'fileManager: openFile existant → retourne "" (succès)');
+  fs.rmSync(fmDir, { recursive: true, force: true });
+
+  // 38.4 storageCleaner : nettoyage des jobs anciens par timestamp du nom.
+  const { StorageCleaner } = require('../src/main/services/maintenance/storageCleaner');
+  const { JOBS_DIR } = require('../src/main/config/constants');
+  assert(StorageCleaner.cleanOldJobs(0) === 0, 'storageCleaner: maxDays=0 → aucun nettoyage');
+  fs.mkdirSync(JOBS_DIR, { recursive: true });
+  const oldJobName = 'job-2020-01-01T00-00-00-000Z';
+  const oldJobPath = path.join(JOBS_DIR, oldJobName);
+  fs.mkdirSync(path.join(oldJobPath, 'results'), { recursive: true });
+  const recentJobName = `job-${new Date().toISOString().slice(0, 19).replace(/:/g, '-')}-000Z`;
+  const recentJobPath = path.join(JOBS_DIR, recentJobName);
+  fs.mkdirSync(path.join(recentJobPath, 'results'), { recursive: true });
+  const deleted = StorageCleaner.cleanOldJobs(30);
+  assert(deleted >= 1 && !fs.existsSync(oldJobPath), 'storageCleaner: job ancien supprimé (>30j)');
+  assert(fs.existsSync(recentJobPath), 'storageCleaner: job récent conservé');
+  // cleanOldHars sur dossier sans HAR → 0
+  assert(StorageCleaner.cleanOldHars(7) === 0, 'storageCleaner: aucun HAR → 0');
+
+  // 38.5 jobHistory : listing, intégrité, export-meta, suppression.
+  const { JobHistoryManager } = require('../src/main/services/jobs/jobHistory');
+  const jobId = recentJobName;
+  const resultsDir = path.join(recentJobPath, 'results');
+  writeWithChecksum(path.join(resultsDir, 'annonces.json'), [
+    { id: '1', title: 'Vélo', prix: 100, deliveryType: 'livraison' },
+    { id: '2', title: 'Table', prix: 50, deliveryType: 'main_propre' },
+  ], null, 2);
+  fs.writeFileSync(path.join(resultsDir, 'export-meta.json'), JSON.stringify({ profileId: 'maximum', exportFields: ['title'] }));
+
+  const jobs = JobHistoryManager.listAllJobs();
+  const found = jobs.find((j) => j.id === jobId);
+  assert(found && found.adsCount === 2, 'jobHistory: job listé avec le bon nombre d\'annonces');
+  assert(found.integrityWarning === null, 'jobHistory: intégrité OK (checksum valide)');
+  assert(found.exportMeta && found.exportMeta.profileId === 'maximum', 'jobHistory: export-meta lu');
+  assert(found.date && /\d{2}\/\d{2}\/\d{4}/.test(found.date), 'jobHistory: date formatée FR (jj/mm/aaaa)');
+  assert(JobHistoryManager.getLatestJob() !== null, 'jobHistory: getLatestJob renvoie un job');
+
+  // Intégrité compromise : checksum modifié → warning, annonces ignorées.
+  fs.writeFileSync(path.join(resultsDir, 'annonces.json.sha256'), 'deadbeef');
+  const jobsCorrupt = JobHistoryManager.listAllJobs();
+  const corrupt = jobsCorrupt.find((j) => j.id === jobId);
+  assert(corrupt && corrupt.integrityWarning, 'jobHistory: checksum invalide → integrityWarning');
+
+  // Suppression : ID valide supprime ; ID malveillant refusé.
+  assert(JobHistoryManager.deleteJob('../etc') === false, 'jobHistory: jobId avec .. refusé');
+  assert(JobHistoryManager.deleteJob('not-a-job') === false, 'jobHistory: jobId malformé refusé');
+  assert(JobHistoryManager.deleteJob(jobId) === true && !fs.existsSync(recentJobPath),
+    'jobHistory: suppression d\'un job valide');
+
+  // 38.6 ipcHandlers : invocation RÉELLE des handlers (config, logs, fichiers,
+  // secrets, openExternal) via un ipcMain capturant.
+  const handlers = {};
+  const ipcStub = {
+    app: { isPackaged: false, getPath: (p) => `/tmp/leboncoin-test-${p}` },
+    Notification: { isSupported: () => false },
+    shell: { openPath: async () => '', openExternal: async () => {} },
+    ipcMain: { on: (ch, fn) => { handlers[ch] = fn; }, handle: (ch, fn) => { handlers[ch] = fn; } },
+    BrowserWindow: function () { this.webContents = { send: () => {} }; },
+  };
+  const origLoad = Module._load;
+  Module._load = function (request) {
+    if (request === 'electron') return ipcStub;
+    if (request === 'playwright') return { chromium: { launch: async () => { throw new Error('stub'); } } };
+    return origLoad.apply(this, arguments);
+  };
+  const ipcPath = require.resolve('../src/main/core/ipcHandlers');
+  delete require.cache[ipcPath];
+  const { setupIpcHandlers } = require(ipcPath);
+  const api = setupIpcHandlers(() => null);
+  Module._load = origLoad;
+
+  assert(typeof api.shutdown === 'function', 'ipcHandlers: shutdown exposé');
+  assert(typeof handlers['config:get'] === 'function' && typeof handlers['config:save'] === 'function',
+    'ipcHandlers: handlers config enregistrés');
+  assert(typeof handlers['logs:export'] === 'function' && typeof handlers['shell:openExternal'] === 'function',
+    'ipcHandlers: handlers logs + openExternal enregistrés');
+
+  const cfg = await handlers['config:get']();
+  assert(cfg && typeof cfg === 'object', 'ipcHandlers: config:get renvoie les réglages');
+  const saved2 = await handlers['config:save']({}, { logLevel: 'info' });
+  assert(saved2.logLevel === 'info', 'ipcHandlers: config:save applique + renvoie');
+
+  const expEmpty = await handlers['logs:export']({}, '   ');
+  assert(expEmpty.ok === false, 'ipcHandlers: logs:export vide → ok:false');
+  const expOk = await handlers['logs:export']({}, '[INFO] ligne de test');
+  assert(expOk.ok === true && fs.existsSync(expOk.path), 'ipcHandlers: logs:export écrit le fichier');
+  fs.rmSync(expOk.path, { force: true });
+
+  const { BASE_OUT_DIR } = require('../src/main/config/constants');
+  const openOk = await handlers['file:openFolder']({}, BASE_OUT_DIR);
+  assert(openOk.success === true, 'ipcHandlers: file:openFolder chemin autorisé → succès');
+  const openBad = await handlers['file:openFolder']({}, '/etc');
+  assert(openBad.success === false && /non autorisé/i.test(openBad.error),
+    'ipcHandlers: file:openFolder hors BASE_OUT_DIR → refusé (path-traversal)');
+
+  const extOk = await handlers['shell:openExternal']({}, 'https://www.leboncoin.fr/');
+  assert(extOk.success === true, 'ipcHandlers: openExternal http/https autorisé');
+  const extBad = await handlers['shell:openExternal']({}, 'javascript:alert(1)');
+  assert(extBad.success === false, 'ipcHandlers: openExternal schéma exotique refusé');
+  const extBad2 = await handlers['shell:openExternal']({}, 'file:///etc/passwd');
+  assert(extBad2.success === false, 'ipcHandlers: openExternal file:// refusé');
+  const extEmpty = await handlers['shell:openExternal']({}, '');
+  assert(extEmpty.success === false, 'ipcHandlers: openExternal URL vide refusée');
+
+  // 38.7 rateLimiter : mathématique du backoff (délais réduits pour un test
+  // rapide ; `sleep` est capturé à l'import, on teste donc currentDelayMs()).
+  {
+    const { AdaptiveRateLimiter } = require('../src/main/utils/rateLimiter');
+    const rl = new AdaptiveRateLimiter({ baseDelayMs: 20, minDelayMs: 10, maxDelayMs: 160, backoffFactor: 2 });
+    assert(rl.currentDelayMs() === 20, 'rateLimiter: délai initial = base');
+    await rl.waitAfter({ blocked: true, status: 429 });
+    assert(rl.currentDelayMs() === 40, 'rateLimiter: 1er blocage → base×2');
+    await rl.waitAfter({ blocked: true, status: 403 });
+    assert(rl.currentDelayMs() === 80, 'rateLimiter: 2e blocage → base×4 (exponentiel)');
+    await rl.waitAfter({ blocked: true, status: 403 });
+    assert(rl.currentDelayMs() === 160, 'rateLimiter: 3e blocage → base×8 (plafonné)');
+    await rl.waitAfter({ blocked: true, status: 403 });
+    await rl.waitAfter({ blocked: true, status: 403 });
+    assert(rl.currentDelayMs() === 160, 'rateLimiter: blocages répétés → reste plafonné à maxDelayMs');
+    rl.reset();
+    assert(rl.currentDelayMs() === 20, 'rateLimiter: reset → retour au délai de base');
+    await rl.waitAfter({ error: true });
+    assert(rl.currentDelayMs() === 30, 'rateLimiter: erreur réseau → ×1.5');
+    rl.reset();
+    await rl.waitAfter({ durationMs: 5000 });
+    assert(rl.currentDelayMs() === 25, 'rateLimiter: réponse lente → ×1.25');
+    rl.reset();
+    for (let i = 0; i < 5; i++) await rl.waitAfter({ durationMs: 10 });
+    assert(rl.currentDelayMs() === 17, 'rateLimiter: 5 succès rapides → accélération (×0.85)');
+    await rl.wait(); // ne doit pas lever
+    assert(rl.currentDelayMs() === 17, 'rateLimiter: wait() n\'altère pas le délai courant');
+  }
+
+  // 38.8 captureState : progression + fusion HAR (reprise incrémentale).
+  {
+    const captureState = require('../src/main/services/scraping/captureState');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-cap-'));
+    assert(captureState.readProgress(tmp) === null, 'captureState: progression absente → null');
+    captureState.writeProgress(tmp, { searchUrl: 'u', pagesRequested: 10, lastPageOk: 6, pagesOk: 6 });
+    const prog = captureState.readProgress(tmp);
+    assert(prog && prog.lastPageOk === 6 && typeof prog.updatedAt === 'string',
+      'captureState: write/read aller-retour + updatedAt');
+
+    const harA = path.join(tmp, 'a.har');
+    const harB = path.join(tmp, 'b.har');
+    const mkHar = (n) => JSON.stringify({ log: { version: '1.2', entries: Array.from({ length: n }, (_, i) => ({ request: { url: `u${i}` }, response: { status: 200, content: {} } })) } });
+    fs.writeFileSync(harA, mkHar(6));
+    fs.writeFileSync(harB, mkHar(4));
+    const out = path.join(tmp, 'merged.har');
+    const merged = captureState.mergeHarFiles([harA, harB], out);
+    assert(merged.entries === 10 && merged.sources === 2, 'captureState: fusion 6+4 entrées HAR');
+    const mergedData = JSON.parse(fs.readFileSync(out, 'utf8'));
+    assert(mergedData.log.entries.length === 10, 'captureState: HAR fusionné contient toutes les entrées');
+    assert(captureState.mergeHarFiles([], out).entries === 0, 'captureState: fusion sans fichier → 0');
+
+    captureState.clearProgress(tmp);
+    assert(captureState.readProgress(tmp) === null, 'captureState: clearProgress efface la progression');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // 38.9 diagnostics + helpers : fonctions utilitaires restantes.
+  {
+    const diag = require('../src/main/utils/diagnostics');
+    const circular = { a: 1 };
+    circular.self = circular;
+    assert(/référence circulaire/.test(diag.safeStringify(circular)),
+      'diagnostics: safeStringify gère les références circulaires');
+    assert(/BigInt/.test(diag.safeStringify({ n: 10n })),
+      'diagnostics: safeStringify sérialise les BigInt');
+    assert(diag.formatBytes(1024 * 1024 * 3) === '3.00 Mo', 'diagnostics: formatBytes → Mo');
+    assert(diag.formatBytes(null) === '?', 'diagnostics: formatBytes(null) → ?');
+    assert(diag.formatMs(null) === '?', 'diagnostics: formatMs(null) → ?');
+
+    const helpers = require('../src/main/utils/helpers');
+    assert(helpers.cleanText('a\r\nb\n\n\n\nc  ') === 'a\nb\n\nc',
+      'helpers: cleanText normalise CRLF + compacte les sauts de ligne');
+    assert(helpers.cleanText(42) === 42, 'helpers: cleanText non-string → inchangé');
+    const t0 = Date.now();
+    await helpers.randomDelay(5, 10);
+    assert(Date.now() - t0 >= 5, 'helpers: randomDelay attend au moins minMs');
+    const awDir = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-aw-'));
+    const awPath = path.join(awDir, 'sub', 'f.txt');
+    helpers.atomicWriteFileSync(awPath, 'contenu');
+    assert(fs.readFileSync(awPath, 'utf8') === 'contenu', 'helpers: atomicWriteFileSync écrit le fichier');
+    fs.rmSync(awDir, { recursive: true, force: true });
+  }
+
+  // 38.10 sessionPaths : résolution par priorité (globale > job > null).
+  {
+    const sessionPaths = require('../src/main/services/scraping/sessionPaths');
+    const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-sess-'));
+    const jobDir = path.join(tmp, 'job-x');
+    fs.mkdirSync(jobDir, { recursive: true });
+    let res = sessionPaths.resolveSessionPath({ baseOutDir: tmp, jobDir });
+    assert(res.path === null && res.kind === null, 'sessionPaths: aucune session → null');
+    fs.writeFileSync(sessionPaths.getJobSessionPath(jobDir), '{}');
+    res = sessionPaths.resolveSessionPath({ baseOutDir: tmp, jobDir });
+    assert(res.kind === 'job', 'sessionPaths: session locale du job utilisée');
+    fs.writeFileSync(sessionPaths.getGlobalSessionPath(tmp), '{}');
+    res = sessionPaths.resolveSessionPath({ baseOutDir: tmp, jobDir });
+    assert(res.kind === 'global', 'sessionPaths: session globale prioritaire sur celle du job');
+    fs.rmSync(tmp, { recursive: true, force: true });
+  }
+
+  // Nettoyage : job récent déjà supprimé ; purge du dossier temporaire.
+  if (fs.existsSync(recentJobPath)) fs.rmSync(recentJobPath, { recursive: true, force: true });
+}
+
+console.log('\n[38] OK');
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

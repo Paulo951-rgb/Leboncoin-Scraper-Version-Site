@@ -3,6 +3,10 @@ dist/
 output/
 *.log
 
+# Couverture de tests
+coverage/
+.nyc_output/
+
 .agents_tmp/
 
 # Config files generated at runtime

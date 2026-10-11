@@ -447,6 +447,34 @@ function mergeKeepingNonNull(existing, incoming) {
   return merged;
 }
 
+function parseHtmlDescription(html, adId) {
+  if (!html) return { description: null, livraison: null, mainPropre: null, note: null, etat: null };
+  const match = html.match(/<script\s+id="__NEXT_DATA__"\s+type="application\/json">\s*([\s\S]*?)\s*<\/script>/i);
+  if (match && match[1]) {
+    try {
+      const nextData = JSON.parse(match[1]);
+      const found = findAdsIterative(nextData);
+      const exact = found.find((c) => String(c.list_id || c.id) === String(adId));
+      const target = exact || found[0];
+      const body = target?.body || target?.description;
+      const descriptionText = (typeof body === 'string') ? body : (body && typeof body.text === 'string' ? body.text : null);
+
+      const transaction = target ? adFields.extractTransaction(target) : null;
+      const seller = target ? adFields.extractSeller(target) : null;
+      const etat = target ? adFields.extractCondition(target) : null;
+
+      return {
+        description: descriptionText ? cleanText(descriptionText) : null,
+        livraison: transaction ? transaction.livraison : null,
+        mainPropre: transaction ? transaction.mainPropre : null,
+        note: seller ? seller.note : null,
+        etat,
+      };
+    } catch { /* Ignorer */ }
+  }
+  return { description: null, livraison: null, mainPropre: null, note: null, etat: null };
+}
+
 function mergeDuplicates(ads, logger) {
   const byId = new Map();
   let noIdCount = 0;
@@ -596,31 +624,7 @@ class DescriptionEnricher {
   }
 
   parseHtmlDescription(html, adId) {
-    if (!html) return { description: null, livraison: null, mainPropre: null, note: null, etat: null };
-    const match = html.match(/<script\s+id="__NEXT_DATA__"\s+type="application\/json">\s*([\s\S]*?)\s*<\/script>/i);
-    if (match && match[1]) {
-      try {
-        const nextData = JSON.parse(match[1]);
-        const found = findAdsIterative(nextData);
-        const exact = found.find((c) => String(c.list_id || c.id) === String(adId));
-        const target = exact || found[0];
-        const body = target?.body || target?.description;
-        const descriptionText = (typeof body === 'string') ? body : (body && typeof body.text === 'string' ? body.text : null);
-
-        const transaction = target ? adFields.extractTransaction(target) : null;
-        const seller = target ? adFields.extractSeller(target) : null;
-        const etat = target ? adFields.extractCondition(target) : null;
-
-        return {
-          description: descriptionText ? cleanText(descriptionText) : null,
-          livraison: transaction ? transaction.livraison : null,
-          mainPropre: transaction ? transaction.mainPropre : null,
-          note: seller ? seller.note : null,
-          etat,
-        };
-      } catch { /* Ignorer */ }
-    }
-    return { description: null, livraison: null, mainPropre: null, note: null, etat: null };
+    return parseHtmlDescription(html, adId);
   }
 
   async enrichAll(ads, writeOutputs) {
@@ -947,7 +951,7 @@ function writeOutputsFactory(outDir, opts) {
   };
 }
 
-module.exports = { detectStructureChanges, normalizeAd, looksLikeAd };
+module.exports = { detectStructureChanges, normalizeAd, looksLikeAd, parseHtmlDescription, findAdsIterative };
 
 async function main() {
   let opts;
