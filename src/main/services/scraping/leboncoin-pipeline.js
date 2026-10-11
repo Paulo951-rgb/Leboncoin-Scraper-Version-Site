@@ -434,8 +434,13 @@ function normalizeAd(raw) {
 // extrait sur une page quand l'autre occurrence de l'annonce ne le contient pas.
 function mergeKeepingNonNull(existing, incoming) {
   const merged = { ...existing, ...incoming };
+  // « Vide » = null/undefined MAIS AUSSI un tableau vide (ex. photosUrls=[]).
+  // Un tableau vide est une absence de données, pas une valeur : le traiter
+  // comme non-null faisait écraser une liste de photos déjà extraite par []
+  // provenant d'une occurrence moins riche de la même annonce (perte de données).
+  const isEmpty = (v) => v == null || (Array.isArray(v) && v.length === 0);
   for (const key of Object.keys(merged)) {
-    if (existing[key] != null && incoming[key] == null) {
+    if (!isEmpty(existing[key]) && isEmpty(incoming[key])) {
       merged[key] = existing[key];
     }
   }
@@ -954,7 +959,7 @@ function writeOutputsFactory(outDir, opts) {
   };
 }
 
-module.exports = { detectStructureChanges, normalizeAd, looksLikeAd, parseHtmlDescription, findAdsIterative };
+module.exports = { detectStructureChanges, normalizeAd, looksLikeAd, parseHtmlDescription, findAdsIterative, mergeKeepingNonNull };
 
 async function main() {
   let opts;
@@ -1146,8 +1151,14 @@ async function main() {
   logger.debug(`[main] Bilan final : ${summarizeAds(ads)}`);
 }
 
-main().catch((err) => {
-  console.error('Erreur fatale :', err.stack || err.message);
-  // Exit code 1 : le PipelineRunner doit savoir que le pipeline a échoué.
-  process.exitCode = 1;
-});
+// Exécution CLI UNIQUEMENT si le fichier est lancé directement (ou forké).
+// Sans cette garde, un simple `require('leboncoin-pipeline')` (tests, usage en
+// bibliothèque) déclenchait main() → parseArgs sans .har → sortie code 1 et
+// processus « planté » à l'import.
+if (require.main === module) {
+  main().catch((err) => {
+    console.error('Erreur fatale :', err.stack || err.message);
+    // Exit code 1 : le PipelineRunner doit savoir que le pipeline a échoué.
+    process.exitCode = 1;
+  });
+}

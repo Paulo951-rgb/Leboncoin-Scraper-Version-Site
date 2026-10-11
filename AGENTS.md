@@ -430,6 +430,27 @@ Sans Wine, `-c.win.signAndEditExecutable=false` permet de produire `dist/win-unp
 - **Logs dev** : `logger._getLogDir()` écrivait dans `Documents` même en dev ;
   doit rester dans `./output/logs` (cohérent avec jobs/secrets), Documents
   uniquement en version packagée.
+- **Fuite vendeur en profil Maximum (clés du modèle)** : `SELLER_FIELD_KEYS`
+  (exportFields.js) doit contenir AUSSI les clés du modèle `normalizeAd`
+  (`nombreAvis`, `vendeurAncienneteJours`), pas seulement les clés d'export
+  (`vendeurNbAvis`, `vendeurAnciennete`). En profil Maximum, `filterAdByFields`
+  opère sur les clés du modèle → sans elles, ces deux champs vendeur fuient
+  malgré « Données vendeur » désactivé.
+- **`mergeKeepingNonNull` et tableaux vides** : un tableau vide (`photosUrls: []`)
+  doit être traité comme une ABSENCE de données, pas comme une valeur. Sinon une
+  occurrence moins riche écrase une liste déjà extraite lors de la fusion de
+  doublons (perte de photos).
+- **`cleanOldHars(0)`** : doit être désactivé (retour 0), comme `cleanOldJobs`.
+  Sans garde-fou, `maxAgeMs = 0` supprime TOUS les HAR (y compris ceux du jour).
+- **`AdStats` repli deliveryType** : le repli rétro-compat doit reproduire
+  `computeDeliveryType` : `false` + `null` → `aucun` (pas `inconnu`). Sinon
+  l'onglet Stats diverge de l'explorateur/fiche annonce sur les mêmes données.
+- **Widget — classes de statut** : `widget.html` ne doit PAS générer
+  `'status-' + state` (classes CSS inexistantes → point sans couleur). Mapper
+  explicitement chaque état sur `status-idle/running/error/completed`.
+- **`main()` du pipeline** : `leboncoin-pipeline.js` DOIT garder son appel
+  `main()` derrière `require.main === module`. Sans cela, un `require()` du
+  pipeline (tests, bibliothèque) lance la CLI sans `.har` → sortie code 1.
 
 ## Code mort retiré
 - `services/ai/` (adAnalyzer, marketValueAnalyzer, promptGenerator, promptTemplates,

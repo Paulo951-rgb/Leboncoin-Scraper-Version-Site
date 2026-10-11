@@ -3598,6 +3598,83 @@ console.log('\n[38] Modules main (settings, logger, fileManager, storageCleaner,
 
 console.log('\n[38] OK');
 
+// --- 39. Bugs corrigés (chasse aux bugs) ---
+// Chaque assertion cible un bug RÉEL corrigé : sans le correctif, elle échoue.
+console.log('\n[39] Bugs corrigés (fuite vendeur, fusion, widget, rétention HAR, deliveryType, require)');
+{
+  // 39.1 Fuite de données vendeur en profil Maximum (excludeSellerData).
+  // Avant : nombreAvis et vendeurAncienneteJours n'étaient pas dans
+  // SELLER_FIELD_KEYS → ils fuitaient malgré « Données vendeur » désactivé.
+  {
+    const { filterAdByFields } = require('../src/main/services/exporting/exportFields');
+    const ad = {
+      id: '1', title: 't', url: 'u', prix: 10, city: 'Lyon', zipcode: '69000',
+      vendeurNom: 'Bob', vendeurType: 'pro', vendeurId: '42', vendeurNote: 4.5,
+      nombreAvis: 12, vendeurUrlProfil: 'https://p', vendeurAncienneteJours: 300,
+      deliveryType: 'livraison', likes: 3, description: 'd',
+    };
+    const out = filterAdByFields(ad, null, { excludeSellerData: true });
+    const leaked = Object.keys(out).filter((k) => /vendeur|avis|anciennete/i.test(k));
+    assert(leaked.length === 0, `export: profil Maximum sans données vendeur → aucune fuite (${leaked.join(',') || 'aucune'})`);
+    assert(!('nombreAvis' in out) && !('vendeurAncienneteJours' in out),
+      'export: nombreAvis et vendeurAncienneteJours exclus (clés du modèle)');
+  }
+
+  // 39.2 Fusion : un tableau vide ne doit pas écraser une liste déjà extraite.
+  {
+    const { mergeKeepingNonNull } = require('../src/main/services/scraping/leboncoin-pipeline');
+    const a = { id: '1', photosUrls: ['a.jpg', 'b.jpg'], description: 'x', vendeurNote: 4.5, raw: { a: 1, b: 2 } };
+    const b = { id: '1', photosUrls: [], description: null, vendeurNote: null, raw: { a: 1 } };
+    const m = mergeKeepingNonNull(a, b);
+    assert(Array.isArray(m.photosUrls) && m.photosUrls.length === 2,
+      'pipeline: mergeKeepingNonNull préserve photosUrls non vide (tableau vide = absence)');
+    assert(m.description === 'x' && m.vendeurNote === 4.5,
+      'pipeline: mergeKeepingNonNull préserve les champs non-null');
+    const m2 = mergeKeepingNonNull({ id: '1', photosUrls: [] }, { id: '1', photosUrls: ['z.jpg'] });
+    assert(m2.photosUrls.length === 1 && m2.photosUrls[0] === 'z.jpg',
+      'pipeline: mergeKeepingNonNull garde la liste non vide dans les deux sens');
+  }
+
+  // 39.3 Widget : classes de statut toutes valides (pas de status-<état> inventé).
+  {
+    const widgetHtml = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/widget.html'), 'utf8');
+    assert(!/:\s*'status-'\s*\+\s*st/.test(widgetHtml),
+      'widget: plus de classe dynamique status-<état> (classes CSS inexistantes)');
+    assert(/status-running/.test(widgetHtml) && /status-idle/.test(widgetHtml),
+      'widget: états capturing/processing mappés sur status-running');
+  }
+
+  // 39.4 cleanOldHars(0) : désactivé (ne supprime AUCUN HAR), cohérent avec cleanOldJobs.
+  {
+    const { StorageCleaner } = require('../src/main/services/maintenance/storageCleaner');
+    assert(StorageCleaner.cleanOldHars(0) === 0, 'storageCleaner: cleanOldHars(0) désactivé → 0');
+  }
+
+  // 39.5 AdStats rétro-compat : false + null → « aucun » (aligné sur computeDeliveryType).
+  {
+    const { AdStats } = require('../src/main/services/analysis/adStats');
+    const r = AdStats.analyze([
+      { id: '1', prix: 100, livraison: false, mainPropre: null },
+      { id: '2', prix: 200, livraison: null, mainPropre: false },
+      { id: '3', prix: 50, livraison: null, mainPropre: null },
+    ]);
+    assert(r.stats.aucunCount === 2, 'AdStats rétro-compat: false+null → aucun (2 attendus)');
+    assert(r.stats.inconnuCount === 1, 'AdStats rétro-compat: null+null → inconnu (1 attendu)');
+  }
+
+  // 39.6 Pipeline : un simple require() ne déclenche PAS la CLI (garde require.main).
+  {
+    const pipelineSrc = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
+    assert(/if\s*\(\s*require\.main\s*===\s*module\s*\)/.test(pipelineSrc),
+      'pipeline: main() gardé par require.main === module');
+    let threw = false;
+    try { require('../src/main/services/scraping/leboncoin-pipeline'); } catch { threw = true; }
+    assert(!threw, 'pipeline: require() en bibliothèque ne lance pas la CLI');
+  }
+}
+
+console.log('\n[39] OK');
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }
