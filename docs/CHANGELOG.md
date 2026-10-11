@@ -3,6 +3,53 @@
 Format inspiré de [Keep a Changelog](https://keepachangelog.com/). Les entrées
 décrivent des modifications vérifiées (code + tests).
 
+## [Non publié] — Chasse aux bugs : 6 correctifs vérifiés — 2026-10-11
+
+### Corrigé
+
+- **Fuite de données vendeur (RGPD)** : `SELLER_FIELD_KEYS`
+  (`exporting/exportFields.js`) ne contenait que les clés d'export
+  (`vendeurNbAvis`, `vendeurAnciennete`). En profil **Maximum**,
+  `filterAdByFields` parcourt les clés du **modèle** (`nombreAvis`,
+  `vendeurAncienneteJours`) → ces deux champs vendeur fuitaient dans
+  `annonces.json`/`annonces.txt` malgré « Données vendeur » désactivé. Les deux
+  clés du modèle sont désormais exclues.
+- **Perte de données à la fusion de doublons** : `mergeKeepingNonNull`
+  (`leboncoin-pipeline.js`) ne considérait comme « vide » que `null`/`undefined`.
+  Un tableau vide (`photosUrls: []`) d'une occurrence moins riche écrasait une
+  liste de photos déjà extraite. Un tableau vide est maintenant traité comme une
+  absence de données.
+- **Widget flottant — statut sans couleur** : `widget.html` générait une classe
+  `status-<état>` pour tout état non mappé (`status-capturing`, `status-processing`,
+  `status-cancelled`) alors que le CSS ne définit que `status-idle/running/error/
+  completed`. Le point de statut perdait sa couleur pendant la capture. Tous les
+  états connus sont désormais mappés explicitement.
+- **Rétention HAR à 0 détruisait tout** : `StorageCleaner.cleanOldHars(0)` fixait
+  `maxAgeMs = 0` et supprimait **tous** les HAR (y compris ceux du jour), de façon
+  incohérente avec `cleanOldJobs` (0 = désactivé). Un garde-fou aligne les deux.
+- **`deliveryType` incohérent dans les Stats** : le repli rétro-compat d'
+  `AdStats.analyze` renvoyait `inconnu` pour un booléen `false` face à `null`,
+  alors que `computeDeliveryType` (et l'explorateur, la fiche annonce) renvoient
+  `aucun`. Les mêmes données produisaient deux répartitions différentes.
+- **Effet de bord à l'import du pipeline** : `leboncoin-pipeline.js` appelait
+  `main()` au niveau module → un simple `require()` (tests, usage bibliothèque)
+  lançait la CLI sans `.har` et sortait en code 1. `main()` est désormais gardé
+  par `require.main === module` (fork/CLI inchangés).
+- **Historique des annonces inversé** : `buildAdHistory` (`jobHistory.js`) triait
+  les occurrences par comparaison **lexicographique** de la date affichée FR
+  (`jj/mm/aaaa`). Résultat : `01/02/2026` classé AVANT `12/01/2026` → la
+  « première découverte » et la « dernière maj » étaient inversées et les
+  variations de prix/likes rapportées à l'envers (une baisse affichée comme une
+  hausse). Tri désormais basé sur l'horodatage ISO de l'id de job (repli FR).
+- **`deliveryType` incohérent (renderer)** : `statsModule.renderStatsView`
+  utilisait le même repli erroné que `AdStats` (false+null → inconnu). Les deux
+  replis sont alignés sur `computeDeliveryType` (false+null → aucun).
+
+### Tests
+
+- Nouvelle section `[39]` (20 assertions) ciblant chaque bug corrigé.
+- `npm test` → 1283 réussis / 0 échoués.
+
 ## [Non publié] — Feuille de route : tests, UX, sécurité, perf — 2026-10-11
 
 ### Ajouté

@@ -58,14 +58,18 @@ class AdStats {
 
     for (const a of ads) {
       let dt = a.deliveryType;
-      // Rétro-compat : si deliveryType absent, calcule depuis livraison/mainPropre
+      // Rétro-compat : si deliveryType absent, calcule depuis livraison/mainPropre.
+      // Doit reproduire EXACTEMENT computeDeliveryType (adFields) : un booléen
+      // `false` face à `null` donne « aucun » (pas « inconnu »). L'ancien repli
+      // renvoyait « inconnu » → l'onglet Stats divergeait de la fiche annonce et
+      // de l'explorateur pour les mêmes données.
       if (!dt) {
         const livraison = a.livraison ?? a.shipping;
         const mainPropre = a.mainPropre ?? a.handDelivery;
         if (livraison === true && mainPropre === true) dt = 'les_deux';
         else if (livraison === true) dt = 'livraison';
         else if (mainPropre === true) dt = 'main_propre';
-        else if (livraison === false && mainPropre === false) dt = 'aucun';
+        else if (livraison === false || mainPropre === false) dt = 'aucun';
         else dt = 'inconnu';
       }
       if (dt === 'livraison') livraisonCount++;

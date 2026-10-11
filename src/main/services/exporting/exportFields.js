@@ -127,9 +127,17 @@ const FIELD_CATEGORIES = [
 ];
 
 // Clés des champs vendeur (pour exclusion optionnelle).
+// On liste à la fois les clés d'export (`vendeurNbAvis`, `vendeurAnciennete`)
+// ET les clés du modèle `normalizeAd` (`nombreAvis`, `vendeurAncienneteJours`).
+// BUG corrigé : en profil Maximum, `filterAdByFields` opère sur l'objet du modèle
+// (fields=null → parcours de Object.keys(ad)), donc seules les clés du modèle
+// sont présentes. Sans `nombreAvis`/`vendeurAncienneteJours` ici, ces deux champs
+// vendeur FUYAIENT malgré « Données vendeur » désactivé (violation RGPD : nombre
+// d'avis et ancienneté du compte vendeur sont des données du vendeur).
 const SELLER_FIELD_KEYS = new Set([
   'vendeurNom', 'vendeurType', 'vendeurId', 'vendeurNote', 'vendeurNbAvis',
-  'vendeurUrlProfil', 'vendeurAnciennete'
+  'vendeurUrlProfil', 'vendeurAnciennete',
+  'nombreAvis', 'vendeurAncienneteJours',
 ]);
 
 // Liste complète des clés pour faciliter les UI « Tout sélectionner ».

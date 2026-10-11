@@ -9,6 +9,12 @@ class StorageCleaner {
    * Nettoie les fichiers .har de plus de `maxDays` jours dans output/
    */
   static cleanOldHars(maxDays = 7) {
+    // Cohérent avec cleanOldJobs : 0 = désactivé. Sans ce garde-fou,
+    // cleanOldHars(0) fixait maxAgeMs=0 et supprimait TOUS les HAR (y compris
+    // ceux des jobs du jour) — un réglage à 0 côté utilisateur détruisait tout
+    // l'historique de capture.
+    if (!maxDays || maxDays <= 0) return 0;
+
     const jobsDir = JOBS_DIR;
     if (!fs.existsSync(jobsDir)) {
       console.log(`[StorageCleaner] Dossier jobs introuvable : ${jobsDir} — rien à nettoyer.`);

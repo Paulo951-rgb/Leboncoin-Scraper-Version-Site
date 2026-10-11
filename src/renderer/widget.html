@@ -188,11 +188,15 @@
 
     window.widgetApi.onStatus((data) => {
       const st = data.state || 'idle';
-      // Le widget mappe les états « partiel » / « refusé » / « limité » sur des
-      // classes visuelles connues (pas de CSS dédiée) pour garder un retour clair.
+      // Le widget mappe chaque état sur une classe visuelle EXISTANTE. Les états
+      // non listés (capturing, processing, cancelled, refused, rate_limited)
+      // retombaient sur 'status-' + st → classes CSS inexistantes (status-capturing…)
+      // → le point de statut perdait toute couleur. On mappe désormais TOUS les
+      // états connus explicitement, avec 'status-idle' en repli sûr.
       const dotClass = (st === 'completed' || st === 'partial') ? 'status-completed'
-        : (st === 'refused' || st === 'rate_limited' || st === 'error') ? 'status-error'
-        : 'status-' + st;
+        : (st === 'error' || st === 'refused' || st === 'rate_limited') ? 'status-error'
+        : (st === 'capturing' || st === 'processing') ? 'status-running'
+        : 'status-idle';
       statusDot.className = 'widget-status-dot ' + dotClass;
       if (data.message) {
         messageText.textContent = data.message;
