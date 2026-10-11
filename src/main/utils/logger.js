@@ -13,7 +13,13 @@
 
 const fs = require('fs');
 const path = require('path');
-const { app } = require('electron');
+
+// `electron` est requis PARESSEUSEMENT : ce module doit rester importable par
+// le serveur Web Node.js (Render), qui n'a pas d'`app` Electron. On tente le
+// require au moment de résoudre le dossier de logs, pas à l'import.
+function _electronApp() {
+  try { return require('electron').app || null; } catch { return null; }
+}
 
 const DEFAULT_RETENTION_DAYS = 7;
 const LOG_DIR_DEV = path.join(process.cwd(), 'output', 'logs');
@@ -25,11 +31,17 @@ let _stream = null;
 
 function _getLogDir() {
   if (_logDir) return _logDir;
+  // Priorité à la surcharge explicite (serveur Web : LBC_BASE_OUT_DIR).
+  if (process.env.LBC_BASE_OUT_DIR) {
+    _logDir = path.join(process.env.LBC_BASE_OUT_DIR, 'logs');
+    return _logDir;
+  }
   // En version packagée, les logs vont dans le dossier utilisateur (Documents).
   // En dev, ils vont dans ./output/logs — comme les jobs et les secrets
   // (constants.js BASE_OUT_DIR, secretStore) — et NON dans Documents, ce qui
   // éparpillait les artefacts de dev hors du projet.
   try {
+    const app = _electronApp();
     const base = app && app.isPackaged
       ? path.join(app.getPath('documents'), 'Leboncoin Scraper Pro')
       : null;

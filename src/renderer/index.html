@@ -817,9 +817,32 @@
   <!-- CONTENEUR DE NOTIFICATIONS (toasts) — remplace les alert() natifs (Thème 5) -->
   <div id="toastContainer" class="toast-container" aria-live="polite" aria-atomic="false"></div>
 
+  <!-- ÉCRAN DE CONNEXION (version Web) — masqué en Electron (pas de window.api.__isWeb) -->
+  <div id="loginOverlay" class="modal-overlay hidden" style="z-index:10000;">
+    <div class="modal-card" style="max-width:420px;">
+      <h3 style="margin-top:0;">🔐 Connexion requise</h3>
+      <p class="text-muted" style="font-size:0.85rem;">Connectez-vous pour accéder à vos tâches de scraping et à vos résultats.</p>
+      <div class="form-group">
+        <label for="loginEmail">Email</label>
+        <input type="email" id="loginEmail" autocomplete="username" placeholder="vous@exemple.com">
+      </div>
+      <div class="form-group">
+        <label for="loginPassword">Mot de passe</label>
+        <input type="password" id="loginPassword" autocomplete="current-password" placeholder="8 caractères minimum">
+      </div>
+      <div id="loginError" class="feedback-status error hidden"></div>
+      <div class="modal-actions" style="display:flex; gap:8px; margin-top:14px;">
+        <button id="loginBtn" class="btn btn-primary" type="button" style="flex:1;">Se connecter</button>
+        <button id="registerBtn" class="btn btn-secondary" type="button" style="flex:1;">Créer un compte</button>
+      </div>
+    </div>
+  </div>
+
   <script src="helpModule.js"></script>
   <script src="appState.js"></script>
   <script src="utils.js"></script>
+  <script src="api.js"></script>
+  <script src="authModule.js"></script>
   <script src="logsModule.js"></script>
   <script src="scraperModule.js"></script>
   <script src="explorerModule.js"></script>

@@ -1,13 +1,21 @@
 'use strict';
 
 const path = require('path');
-const { app } = require('electron');
 
-// Définition du dossier de base (Documents pour l'exe, dossier local pour le dev)
-const isPackaged = app.isPackaged;
-const BASE_OUT_DIR = isPackaged 
-  ? path.join(app.getPath('documents'), 'Leboncoin Scraper Pro')
-  : path.join(process.cwd(), 'output');
+function _electronApp() {
+  try { return require('electron').app || null; } catch { return null; }
+}
+
+function resolveBaseOutDir() {
+  if (process.env.LBC_BASE_OUT_DIR) return process.env.LBC_BASE_OUT_DIR;
+  const app = _electronApp();
+  const isPackaged = app ? app.isPackaged : false;
+  return isPackaged
+    ? path.join(app.getPath('documents'), 'Leboncoin Scraper Pro')
+    : path.join(process.cwd(), 'output');
+}
+
+const BASE_OUT_DIR = resolveBaseOutDir();
 
 // 🔑 Chemin unique pour la session globale (Master Session)
 const GLOBAL_SESSION_PATH = path.join(BASE_OUT_DIR, 'global-session.json');

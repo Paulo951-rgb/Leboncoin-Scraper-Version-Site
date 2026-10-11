@@ -1,0 +1,21 @@
+# Contexte de build Docker — exclut tout ce qui n'est pas nécessaire à l'image.
+node_modules
+npm-debug.log*
+output
+coverage
+.nyc_output
+dist
+.git
+.github
+.agents_tmp
+docs
+test
+build
+*.md
+!README.md
+.env
+.env.*
+!.env.example
+.DS_Store
+Thumbs.db
+tools/generate-icon.py

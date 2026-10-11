@@ -4,22 +4,25 @@ Application de bureau **Electron** pour scraper, explorer et analyser des annonc
 
 > **Leboncoin Scraper Pro** est un outil d'automatisation et de structuration de données destiné à faciliter le traitement de données auxquelles l'utilisateur est autorisé à accéder et à traiter. L'utilisateur reste responsable du respect des conditions d'utilisation, des droits applicables et de la réglementation concernant les données collectées. Ce logiciel ne fournit aucune autorisation d'accès ou de réutilisation des données de sites tiers.
 
+> 🌐 **Version Web** : ce dépôt fournit AUSSI une version serveur accessible par URL HTTPS (déploiement Render), sans installation ni Electron chez l'utilisateur. Voir [Version Web (Render)](#-version-web-render) et `docs/WEB_DEPLOYMENT.md`.
+
 ---
 
 ## 📋 Table des matières
 
 1. [Présentation](#-présentation)
 2. [Fonctionnalités](#-fonctionnalités)
-3. [Installation pour les utilisateurs finaux](#-installation-pour-les-utilisateurs-finaux)
-4. [Installation pour les développeurs](#-installation-pour-les-développeurs)
-5. [Guide d'utilisation](#-guide-dutilisation)
-6. [Architecture](#-architecture)
-7. [Structure du projet](#-structure-du-projet)
-8. [Modèle de données](#-modèle-de-données)
-9. [Build (génération du .exe)](#-build-génération-du-exe)
-10. [Tests](#-tests)
-11. [Dépannage](#-dépannage)
-12. [Avertissement légal](#-avertissement-légal)
+3. [Version Web (Render)](#-version-web-render)
+4. [Installation pour les utilisateurs finaux](#-installation-pour-les-utilisateurs-finaux)
+5. [Installation pour les développeurs](#-installation-pour-les-développeurs)
+6. [Guide d'utilisation](#-guide-dutilisation)
+7. [Architecture](#-architecture)
+8. [Structure du projet](#-structure-du-projet)
+9. [Modèle de données](#-modèle-de-données)
+10. [Build (génération du .exe)](#-build-génération-du-exe)
+11. [Tests](#-tests)
+12. [Dépannage](#-dépannage)
+13. [Avertissement légal](#-avertissement-légal)
 
 ---
 
@@ -85,6 +88,60 @@ L'utilisateur choisit parmi **3 profils de données** au moment du scraping :
 
 ---
 
+## 🌐 Version Web (Render)
+
+Ce dépôt contient **deux applications indépendantes** partageant le même moteur
+de scraping :
+
+| Version | Entrée | Exécution | Public |
+|---|---|---|---|
+| **Bureau** | `src/main/main.js` (`npm start`) | Electron local | Utilisateur desktop |
+| **Web** | `src/server/index.js` (`npm run start:web`) | Serveur Node.js (Render) | Navigateur (PC/tablette/téléphone) |
+
+La version Web réutilise **intégralement** le moteur existant (`harCapturer`,
+`pipelineRunner`, `leboncoin-pipeline`, `adFields`, `errorCodes`, profils de
+données, exports) — aucune simulation. Seule la couche Electron (fenêtres, IPC,
+`shell`, `safeStorage`, chemins `Documents`) est remplacée par un serveur HTTP.
+
+### Démarrage local
+
+```bash
+npm install
+npm run start:web          # http://localhost:3000
+# ou, pour désactiver l'authentification en développement :
+LBC_AUTH_DISABLED=1 npm run start:web
+```
+
+### Fonctionnalités conservées
+
+Scraper (URL, pages, limites, profils, vitesse, progression, annulation,
+erreurs, résultats partiels) · Logs (temps réel SSE, filtres, export) ·
+Historique · Explorateur (recherche, filtres, tri, tableau/grille, fiche) ·
+Statistiques (totaux, prix, distribution, vendeurs, villes, modes de remise) ·
+Carte Leaflet · Profils Défaut/Maximum/Personnalisé · exclusion des données
+vendeur · Paramètres · Aide & informations légales.
+
+Adaptations Web : écran de connexion, téléchargement des exports (JSON/TXT) via
+HTTP, suivi des tâches par **SSE** (repli polling), interface responsive/tactile.
+Les fonctions purement locales (ouverture de fichiers, widget flottant, secrets
+chiffrés) sont remplacées par des équivalents Web explicites.
+
+### Déploiement
+
+`Dockerfile` (image Playwright `1.41.2-jammy` = version exacte du projet),
+`render.yaml` (service + disque persistant `/data`), endpoint de santé
+`/api/health`. Détails complets : **`docs/WEB_DEPLOYMENT.md`** ; audit et plan de
+migration : **`docs/WEB_MIGRATION_AUDIT.md`**.
+
+### Limite CAPTCHA
+
+Le serveur est **headless** : la résolution manuelle d'un CAPTCHA n'est pas
+possible. La tâche passe alors à l'état **`action_required`** (arrêt propre +
+message explicite) — aucun contournement n'est tenté et aucune fausse réussite
+n'est rapportée.
+
+---
+
 ## 💾 Installation pour les utilisateurs finaux
 
 Aucune connaissance technique requise. Vous n'avez **pas besoin de Node.js, npm ou d'un terminal**.
@@ -145,8 +202,11 @@ npm start
 
 | Script | Commande | Rôle |
 |---|---|---|
-| `npm start` | `electron --max-old-space-size=8192 .` | Lance l'app en développement |
-| `npm test` | `node test/regression.test.js` | Suite de non-régression |
+| `npm start` | `electron --max-old-space-size=8192 .` | Lance l'app de bureau en développement |
+| `npm run start:web` | `node src/server/index.js` | Lance le **serveur Web** (Render-compatible) |
+| `npm test` | `node test/regression.test.js` | Suite de non-régression (Electron) |
+| `npm run test:server` | `node test/server.test.js` | Suite serveur / API / frontend Web |
+| `npm run test:all` | `node test/regression.test.js && node test/server.test.js` | Les deux suites |
 | `npm run browsers` | `node tools/prepare-browsers.js` | Télécharge le Chromium de la plateforme hôte dans `node_modules` |
 | `npm run browsers:win` | `node tools/prepare-browsers.js --platform=win` | Télécharge le Chromium **Windows** (build croisé sur Linux/macOS) |
 | `npm run icon` | `python3 tools/generate-icon.py` | Régénère `build/icon.ico` (nécessite Pillow) |
@@ -238,9 +298,25 @@ Architecture standard **Electron** (main + renderer) avec un **sous-processus** 
 ```
 leboncoin-scraper-app/
 ├── package.json                          # Métadonnées, dépendances, scripts
+├── Dockerfile                            # Image Web (Playwright 1.41.2 + Node)
+├── render.yaml                           # Blueprint Render (service + disque)
+├── .dockerignore / .env.example          # Contexte Docker / variables d'env
 ├── test/
-│   └── regression.test.js                # Suite de non-régression (suite de non-régression)
+│   ├── regression.test.js                # Suite de non-régression Electron
+│   └── server.test.js                    # Suite serveur/API/frontend (Web)
 └── src/
+    ├── server/                           # 🆕 Backend Web (indépendant d'Electron)
+    │   ├── index.js                      # Entrée serveur (0.0.0.0:PORT, arrêt propre)
+    │   ├── app.js                        # Fabrique Express (CSP, JSON borné, statiques)
+    │   ├── config.js                     # Config via variables d'environnement
+    │   ├── db.js                         # SQLite (users, sessions, jobs, logs, settings)
+    │   ├── auth.js                       # Sessions (cookie HttpOnly) + autorisation
+    │   ├── security.js                   # Validation entrées + anti-SSRF
+    │   ├── jobManager.js                 # File d'attente + exécution + annulation
+    │   ├── logBus.js                     # Bus temps réel (SSE)
+    │   ├── resultsService.js             # Lecture/nettoyage des résultats
+    │   ├── maintenance.js                # Rétention (jobs/HAR) + purge sessions
+    │   └── routes/api.js                 # Routes REST + SSE
     ├── main/                             # Processus principal Electron
     │   ├── main.js                       # Cycle de vie + fenêtres + single-instance lock
     │   ├── preload.js                    # Pont sécurisé Main ↔ Renderer (contextBridge)
@@ -279,6 +355,8 @@ leboncoin-scraper-app/
     │       └── urlSecurity.js            # Validation d'URLs (http/https)
     └── renderer/
         ├── index.html                    # UI (sidebar, onglets, modales)
+        ├── api.js                        # 🆕 Client API Web (window.api compatible)
+        ├── authModule.js                 # 🆕 Connexion + reprise de tâche (Web)
         ├── widget.html                   # Widget flottant
         ├── app.js                        # Logique front-end (orchestration, sidebar)
         ├── appState.js                   # État global du renderer
@@ -453,12 +531,15 @@ npm run pack
 ### Exécuter
 
 ```bash
-npm test
+npm test            # régression Electron (1317 tests)
+npm run test:server # serveur / API / frontend Web (65 tests, moteur factice)
+npm run test:all    # les deux suites
 ```
 
 Résultat attendu : `=== RÉSULTAT : <N> réussis, 0 échoués ===`
 
 > Le test installe des **stubs** pour `electron` et `playwright` afin de `require()` les modules en Node pur, sans lancer Electron/Chromium.
+> `test/server.test.js` utilise un **moteur de scraping factice** (données contrôlées, aucune requête réseau) : création de tâche, progression, logs, annulation, résultats complets/partiels, 3 profils, exclusion vendeur, exports, isolation utilisateurs, erreurs, reconnexion, concurrence, rétention, responsive.
 
 ---
 

@@ -8,7 +8,7 @@ const { PipelineRunner } = require('../services/scraping/pipelineRunner');
 const { FileManager } = require('../infrastructure/fileManager');
 const { JobHistoryManager } = require('../services/jobs/jobHistory');
 const { StorageCleaner } = require('../services/maintenance/storageCleaner');
-const { JOBS_DIR, BASE_OUT_DIR } = require('../config/constants');
+const { JOBS_DIR, BASE_OUT_DIR, GLOBAL_SESSION_PATH } = require('../config/constants');
 const { summarizeAds, formatBytes, describeError } = require('../utils/diagnostics');
 const { readWithChecksum } = require('../utils/integrity');
 const { loadSettings, saveSettings } = require('./settings');
@@ -181,6 +181,10 @@ function setupIpcHandlers(getMainWindow) {
         headless: userSettings.headless !== false,
         minPageDelayMs: pageDelay,
         maxPageDelayMs: pageDelay + 700,
+        // Session globale injectée explicitement : harCapturer.js ne requiert
+        // plus config/constants (qui importe electron) afin d'être réutilisable
+        // par le serveur Web. On conserve ici le comportement Electron exact.
+        globalSessionPath: GLOBAL_SESSION_PATH,
       });
       sendLog({ level: 'debug', message: `[job:start] Vitesse=${userSettings.scrapeSpeed} | headless=${userSettings.headless !== false} | délai pages=${pageDelay}ms` });
 

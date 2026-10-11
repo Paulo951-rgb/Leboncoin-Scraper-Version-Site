@@ -13,20 +13,27 @@ async function loadHistoryPage() {
 
 function renderHistoryTable(jobs) {
   if (!jobs || jobs.length === 0) {
-    historyTableBody.innerHTML = '<tr><td colspan="4" class="text-center">Aucun scraping trouvé dans output/jobs/</td></tr>';
+    historyTableBody.innerHTML = '<tr><td colspan="4" class="text-center">Aucun scraping enregistré</td></tr>';
     return;
   }
+
+  // Sur le Web, les fichiers ne sont pas « ouverts » mais TÉLÉCHARGÉS.
+  const isWeb = !!(window.api && window.api.__isWeb);
 
   historyTableBody.innerHTML = jobs
     .map(
       (j) => `
     <tr>
-              <td>${escapeHtml(j.date)}${(j.exportMeta && ((j.exportMeta.profileId || j.exportMeta.exportMode) === 'custom')) ? '<br><span class="tag-export-custom" title="Mode Personnalisé : uniquement les champs sélectionnés">✂️ Personnalisé</span>' : ''}</td>
+              <td>${escapeHtml(j.date)}${(j.exportMeta && ((j.exportMeta.profileId || j.exportMeta.exportMode) === 'custom')) ? '<br><span class="tag-export-custom" title="Mode Personnalisé : uniquement les champs sélectionnés">✂️ Personnalisé</span>' : ''}
+                  <br><span class="text-muted font-small">${escapeHtml(statusLabel(j.status))}</span></td>
       <td><strong>${escapeHtml(String(j.adsCount))}</strong> annonces</td>
       <td>
         <div class="file-tags">
-          ${j.files.json ? `<span class="file-tag" data-action="openFile" data-id="${escapeHtml(j.files.json)}">JSON</span>` : ''}
-          ${j.files.txt ? `<span class="file-tag tag-txt" data-action="openFile" data-id="${escapeHtml(j.files.txt)}">TXT</span>` : ''}
+          ${isWeb
+            ? `<span class="file-tag" data-action="downloadExport" data-id="${escapeHtml(j.id)}" data-format="json">⬇ JSON</span>
+               <span class="file-tag tag-txt" data-action="downloadExport" data-id="${escapeHtml(j.id)}" data-format="txt">⬇ TXT</span>`
+            : `${j.files.json ? `<span class="file-tag" data-action="openFile" data-id="${escapeHtml(j.files.json)}">JSON</span>` : ''}
+               ${j.files.txt ? `<span class="file-tag tag-txt" data-action="openFile" data-id="${escapeHtml(j.files.txt)}">TXT</span>` : ''}`}
         </div>
       </td>
       <td>
@@ -36,6 +43,19 @@ function renderHistoryTable(jobs) {
   `
     )
     .join('');
+}
+
+function statusLabel(status) {
+  const map = {
+    completed: '✅ Terminé',
+    partial: '⚠️ Partiel',
+    failed: '❌ Échec',
+    cancelled: '⏹️ Annulé',
+    running: '⏳ En cours',
+    queued: '🕐 En file',
+    action_required: '🙋 Action requise',
+  };
+  return map[status] || status || '';
 }
 
 window.askDeleteJob = (jobId) => {
