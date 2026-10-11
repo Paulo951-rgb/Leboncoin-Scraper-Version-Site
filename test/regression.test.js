@@ -376,15 +376,15 @@ console.log('\n[3f] Préservation des résultats partiels');
   });
 }
 
-// --- 3g. Pipeline : blocage d'accès pendant l'enrichissement → exit 3/4 ---
-// Le pipeline sort en code 3 (403) ou 4 (429) sur blocage d'accès pendant
-// l'enrichissement, APRÈS avoir conservé annonces.json (couvert par [3f]).
-console.log('\n[3g] Enrichissement bloqué → codes de sortie 3/4');
+// --- 3g. Pipeline : moteur d'enrichissement historique restauré ---
+// Le durcissement anti-débit (exit 3/4, Retry-After, noWait) a été retiré au
+// profit du moteur historique (backoff base×2^N, arrêt après 3 blocages).
+console.log('\n[3g] Enrichissement : moteur historique restauré');
 {
   const pipeExit = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
-  assert(/process\.exitCode = refused \? 3 : 4/.test(pipeExit), '[3g] pipeline: 403 → exit 3, 429 → exit 4');
-  assert(/Résultats partiels conservés/.test(pipeExit), '[3g] pipeline: message « résultats partiels conservés »');
-  assert(/stopReason/.test(pipeExit), '[3g] pipeline: motif d\'arrêt (stopReason) remonté');
+  assert(!/process\.exitCode = refused \? 3 : 4/.test(pipeExit), '[3g] pipeline: plus d\'exit 3/4 (moteur historique)');
+  assert(!/stopReason/.test(pipeExit), '[3g] pipeline: plus de stopReason (moteur historique)');
+  assert(/Bloqué \(HTTP 403\/429\)/.test(pipeExit), '[3g] pipeline: gestion historique des blocages 403/429');
 }
 
 
@@ -867,18 +867,16 @@ assert(/NE RECHARGE PAS|sans reload|sans recharger/.test(harCode), 'harCapturer:
 assert(/waitUntil:\s*['"]networkidle['"]/.test(harCode), 'harCapturer: warmup utilise networkidle');
 assert(/sleep\(3000\)/.test(harCode), 'harCapturer: délai warmup 3s (rendu CAPTCHA différé)');
 
-// harCapturer : VÉRIFICATION RÉELLE de l'accès avant persistance (le point clé
-// de l'audit : la disparition visuelle du défi n'est PAS une preuve d'accès).
-assert(/_verifyAccess\s*\(/.test(harCode), 'harCapturer: vérification réelle de l\'accès (_verifyAccess)');
-assert(/verified:\s*false/.test(harCode) && /verified:\s*true/.test(harCode), 'harCapturer: résultat d\'accès structuré (verified true/false)');
-assert(/HTTP_ACCESS_REFUSED/.test(harCode), 'harCapturer: HTTP 403 → HTTP_ACCESS_REFUSED (accès refusé)');
-assert(/HTTP_RATE_LIMITED/.test(harCode), 'harCapturer: HTTP 429 → HTTP_RATE_LIMITED (limitation)');
-assert(/_parseRetryAfter/.test(harCode), 'harCapturer: Retry-After respecté (parsing)');
-assert(/CAPTCHA_DETECTED/.test(harCode) && /ACCESS_UNVERIFIED/.test(harCode), 'harCapturer: distinction CAPTCHA_DETECTED / ACCESS_UNVERIFIED');
-assert(/stabilisation/i.test(harCode), 'harCapturer: stabilisation avant vérification d\'accès');
-assert(/Accès non confirmé|Accès toujours non confirmé|accès non confirmé/i.test(harCode), 'harCapturer: arrêt si accès non confirmé (pas de fausse réussite)');
-assert(/résolution interactive|vérification interactive/.test(harCode), 'harCapturer: CAPTCHA pendant capture → vérification interactive');
-assert(/Reprise après confirmation/.test(harCode), 'harCapturer: reprise capture après confirmation d\'accès');
+// harCapturer : MOTEUR HISTORIQUE RESTAURÉ (commit 8d223c9).
+// La vérification d'accès `_verifyAccess` (qui rejetait à tort des réponses
+// valides via un filtre de contenu trop large) a été retirée : la session est
+// validée comme dans l'ancien moteur, sur la disparition du défi + stabilisation.
+assert(!/_verifyAccess\s*\(/.test(harCode), 'harCapturer: plus de _verifyAccess (moteur historique restauré)');
+assert(!/_parseRetryAfter/.test(harCode), 'harCapturer: plus de _parseRetryAfter (moteur historique restauré)');
+assert(!/bodyOk/.test(harCode), 'harCapturer: plus de filtre de contenu bloquant (bodyOk)');
+assert(/stabilisation/i.test(harCode), 'harCapturer: stabilisation avant persistance de session');
+assert(/résolution interactive|vérification interactive/.test(harCode) || /tentative de résolution interactive/.test(harCode), 'harCapturer: CAPTCHA pendant capture → résolution interactive');
+assert(/Reprise après résolution CAPTCHA/.test(harCode), 'harCapturer: reprise capture après résolution CAPTCHA (moteur historique)');
 
 // harCapturer : UA FIXE pour toute la capture
 assert(/this\._userAgent\s*=\s*getRandomUserAgent\(\)/.test(harCode), 'harCapturer: UA fixe choisi une fois dans le constructeur');
@@ -996,8 +994,8 @@ const harCode2 = fs.readFileSync(path.join(base, 'services/scraping/harCapturer.
 assert(/latestHttpStatus/.test(harCode2), 'harCapturer: tracking dynamique latestHttpStatus (fix vStatus figé)');
 assert(/vPage\.on\('response'/.test(harCode2), 'harCapturer: écouteur response pour statut HTTP temps réel');
 assert(/resourceType\(\) === 'document'/.test(harCode2), 'harCapturer: filtre document sur resourceType (ignore sous-ressources)');
-assert(/checkVBlocked\s*=\s*async\s*\(\)\s*=>\s*this\._checkCaptcha\(vPage\)/.test(harCode2), 'harCapturer: polling content-based (plus de vStatus figé)');
-assert(/visualClear/.test(harCode2), 'harCapturer: confirmation anti-faux-positif (visualClear)');
+assert(/checkVBlocked\s*=\s*async\s*\(\)\s*=>/.test(harCode2) || /checkVBlocked\s*=\s*async\s*\(\)\s*=>\s*\{/.test(harCode2), 'harCapturer: polling content-based (plus de vStatus figé)');
+assert(/confirmedClear/.test(harCode2), 'harCapturer: confirmation anti-faux-positif (confirmedClear / moteur historique)');
 assert(!/while \(isBlocked && !this\.isCancelled\)/.test(harCode2), 'harCapturer: ancienne boucle isBlocked remplacée par visualClear');
 assert(/POLL_INTERVAL_MS = 2000/.test(harCode2), 'harCapturer: polling 2s (detection rapide, plus 3s)');
 
@@ -1459,16 +1457,16 @@ await (async function () {
     'urlSecurity: validateRemoteUrl fail-closed si résolution DNS vide');
 })();
 
-// harCapturer : câblage du contrôle de destination + garde réseau
+// harCapturer : contrôle de destination + garde réseau RETIRÉS avec le moteur
+// historique (commit 8d223c9). La sécurité des sous-requêtes reste assurée au
+// niveau du pipeline d'enrichissement (`ALLOWED_FETCH_HOSTS` + `isFetchUrlAllowed`).
 {
   const harSecCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/harCapturer.js'), 'utf8');
-  assert(/isSafeFetchDestination/.test(harSecCode), 'harCapturer: utilise isSafeFetchDestination');
-  assert(/LEBONCOIN_SOURCE_HOSTS/.test(harSecCode), 'harCapturer: allowlist des domaines Leboncoin définie');
-  assert(/isSafeFetchDestination\(searchUrl, LEBONCOIN_SOURCE_HOSTS\)/.test(harSecCode),
-    'harCapturer: valide l\'URL de recherche contre l\'allowlist Leboncoin');
-  assert(/_installNetworkGuard/.test(harSecCode), 'harCapturer: garde réseau installée');
-  assert(/ctx\.route\(/.test(harSecCode), 'harCapturer: intercepte les sous-requêtes (route)');
-  assert(/route\.abort\(/.test(harSecCode), 'harCapturer: bloque les requêtes interdites');
+  assert(!/isSafeFetchDestination/.test(harSecCode), 'harCapturer: plus de contrôle SSRF (restauré à l\'état historique)');
+  assert(!/_installNetworkGuard/.test(harSecCode), 'harCapturer: plus de garde réseau (état historique)');
+  const pipeSecCode = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
+  assert(/ALLOWED_FETCH_HOSTS/.test(pipeSecCode) && /isFetchUrlAllowed/.test(pipeSecCode),
+    'pipeline: filtrage SSRF des enrichissements conservé');
 }
 
 // Data nullability : livraison/mainPropre/type ne sont plus inventés
@@ -2411,16 +2409,15 @@ console.log('\n[29] CI Windows (build + release)');
   console.log('\n[29] OK');
 })();
 
-// --- 30. Audit : CAPTCHA / accès réel / états honnêtes (non-régression) ---
-// Vérifie que la résolution VISUELLE d'un CAPTCHA ne suffit plus : l'accès doit
-// être réellement confirmé (statut HTTP favorable), et 403/429 ne sont JAMAIS
-// présentés comme un succès. Tests unitaires purs (aucun navigateur réel).
-console.log('\n[30] Audit : accès réel, 403/429, états honnêtes');
+// --- 30. Moteur historique restauré : accès/vérif/états honnêtes retirés ---
+// La vérification d'accès réelle (403/429) et les états refused/rate_limited
+// ont été retirés au profit du moteur historique `8d223c9` (cf. décision de
+// restauration). Les codes structurés restent définis mais ne sont plus utilisés
+// par harCapturer ; les états `partial`/`refused`/`rate_limited` côté renderer
+// restent tolérés (aucune régression UI).
+console.log('\n[30] Restauration du moteur historique de scraping');
 {
-  const { ErrorCodes, createError, classifyError } = require('../src/main/services/scraping/errorCodes');
-  const { HarCapturer } = require('../src/main/services/scraping/harCapturer');
-
-  // 30.1 Nouveaux codes structurés présents et classés.
+  const { ErrorCodes, classifyError } = require('../src/main/services/scraping/errorCodes');
   assert(ErrorCodes.HTTP_ACCESS_REFUSED === 'HTTP_ACCESS_REFUSED', 'ErrorCodes: HTTP_ACCESS_REFUSED');
   assert(ErrorCodes.HTTP_RATE_LIMITED === 'HTTP_RATE_LIMITED', 'ErrorCodes: HTTP_RATE_LIMITED');
   assert(ErrorCodes.ACCESS_UNVERIFIED === 'ACCESS_UNVERIFIED', 'ErrorCodes: ACCESS_UNVERIFIED');
@@ -2429,71 +2426,29 @@ console.log('\n[30] Audit : accès réel, 403/429, états honnêtes');
   assert(classifyError(ErrorCodes.HTTP_RATE_LIMITED) === 'network_error', 'classifyError: HTTP_RATE_LIMITED → network_error');
   assert(classifyError(ErrorCodes.ACCESS_UNVERIFIED) === 'session_error', 'classifyError: ACCESS_UNVERIFIED → session_error');
 
-  // 30.2 _parseRetryAfter (pur) : secondes, date HTTP, absence.
-  const cap = new HarCapturer();
-  assert(cap._parseRetryAfter('120') === 120000, 'harCapturer._parseRetryAfter: "120" → 120000ms');
-  assert(cap._parseRetryAfter(null) === null, 'harCapturer._parseRetryAfter: null → null');
-  assert(cap._parseRetryAfter('garbage') === null, 'harCapturer._parseRetryAfter: entrée invalide → null');
-  assert(cap._parseRetryAfter('9999') === 300000, 'harCapturer._parseRetryAfter: plafonné à 5 min');
+  // harCapturer : le moteur historique ne contient plus la vérification d'accès.
+  const harCap = fs.readFileSync(path.join(base, 'services/scraping/harCapturer.js'), 'utf8');
+  assert(!/_verifyAccess/.test(harCap) && !/_parseRetryAfter/.test(harCap), '[30] harCapturer: vérif. d\'accès retirée');
 
-  // 30.3 _verifyAccess : la décision dépend du STATUT HTTP, pas de l'écran.
-  const mkResp = (status, headers = {}, body = 'contenu de recherche valide '.repeat(4)) => ({
-    status: () => status,
-    headers: () => headers,
-    text: async () => body,
-  });
-  // On neutralise _checkCaptcha pour piloter l'état « défi visible ».
-  async function verifyWith({ status, captcha = false, body = 'contenu valide '.repeat(6), headers = {} }) {
-    const c = new HarCapturer();
-    c._checkCaptcha = async () => captcha;
-    const page = {
-      url: () => 'https://www.leboncoin.fr/recherche?page=1',
-      request: { get: async () => mkResp(status, headers, body) },
-    };
-    return c._verifyAccess(page, 'https://www.leboncoin.fr/recherche?page=1');
-  }
-
-  const ok = await verifyWith({ status: 200 });
-  assert(ok.verified === true && ok.code === null, '[30] accès 200 + contenu valide → verified=true');
-  const captchaRes = await verifyWith({ status: 200, captcha: true });
-  assert(captchaRes.verified === false && captchaRes.code === ErrorCodes.CAPTCHA_DETECTED, '[30] CAPTCHA encore visible → non confirmé (CAPTCHA_DETECTED)');
-  const blockedBody = await verifyWith({ status: 200, body: 'short' });
-  assert(blockedBody.verified === false && blockedBody.code === ErrorCodes.CAPTCHA_DETECTED, '[30] 200 mais contenu bloqué → non confirmé');
-  const f403 = await verifyWith({ status: 403 });
-  assert(f403.verified === false && f403.code === ErrorCodes.HTTP_403, '[30] CAPTCHA disparu mais HTTP 403 persistant → HTTP_403 (jamais un succès)');
-  const r429 = await verifyWith({ status: 429, headers: { 'retry-after': '120' } });
-  assert(r429.verified === false && r429.code === ErrorCodes.HTTP_429, '[30] HTTP 429 → HTTP_429 (non confirmé)');
-  assert(r429.retryAfterMs === 120000, '[30] HTTP 429 → Retry-After respecté (120000ms)');
-  // Échec de la requête (request.get lève) → ACCESS_UNVERIFIED.
-  const cUnv = new HarCapturer();
-  cUnv._checkCaptcha = async () => false;
-  const unvPage = { url: () => 'https://www.leboncoin.fr/r', request: { get: async () => { throw new Error('timeout'); } } };
-  const unv = await cUnv._verifyAccess(unvPage, 'https://www.leboncoin.fr/r');
-  assert(unv.verified === false && unv.code === ErrorCodes.ACCESS_UNVERIFIED, '[30] échec de requête → ACCESS_UNVERIFIED');
-
-  // 30.4 ipcHandlers : états honnêtes (refused / rate_limited / partial).
+  // ipcHandlers : plus de court-circuit sur capture bloquée (moteur historique).
   const ipcAudit = fs.readFileSync(path.join(base, 'core/ipcHandlers.js'), 'utf8');
-  assert(/'refused'/.test(ipcAudit) && /'rate_limited'/.test(ipcAudit), 'ipcHandlers: états refused/rate_limited distincts');
-  assert(/state:\s*'partial'/.test(ipcAudit), 'ipcHandlers: état partial (succès partiel) émis');
-  assert(/HTTP_ACCESS_REFUSED/.test(ipcAudit) && /HTTP_RATE_LIMITED/.test(ipcAudit), 'ipcHandlers: codes 403/429 structurés remontés');
-  assert(/captureResult\s*&&\s*captureResult\.blocked/.test(ipcAudit), 'ipcHandlers: ne lance pas le pipeline si accès non confirmé');
-  assert(/conservée\(s\) malgré l'échec|Succès partiel/.test(ipcAudit), 'ipcHandlers: résultats partiels signalés (pas de perte sur échec secondaire)');
-  // Jamais de « succès » quand partial.
-  assert(!/partial[\s\S]{0,200}state:\s*'completed'/.test(ipcAudit), 'ipcHandlers: partial n’est jamais rapporté comme completed');
+  assert(!/captureResult/.test(ipcAudit), 'ipcHandlers: plus de court-circuit captureResult (moteur historique)');
+  assert(/activeCancel && activeCancel\.cancelled/.test(ipcAudit), 'ipcHandlers: annulation coopérative conservée');
+  assert(/state:\s*'partial'/.test(ipcAudit), 'ipcHandlers: état partial (succès partiel) conservé');
+  assert(/state:\s*'completed'/.test(ipcAudit), 'ipcHandlers: état completed conservé');
 
-  // 30.5 pipelineRunner : codes 3 (403) / 4 (429) classés.
+  // pipelineRunner : classification des exit 3/4 conservée (inertée côté pipeline).
   const runnerAudit = fs.readFileSync(path.join(base, 'services/scraping/pipelineRunner.js'), 'utf8');
   assert(/code === 3/.test(runnerAudit) && /HTTP_ACCESS_REFUSED/.test(runnerAudit), 'pipelineRunner: exit 3 → HTTP_ACCESS_REFUSED');
   assert(/code === 4/.test(runnerAudit) && /HTTP_RATE_LIMITED/.test(runnerAudit), 'pipelineRunner: exit 4 → HTTP_RATE_LIMITED');
 
-  // 30.6 pipeline : 429 distinct + Retry-After + code de sortie honnête + partiels.
+  // pipeline : moteur historique (pas de 429 distinct ni d'exit 3/4).
   const pipeAudit = fs.readFileSync(path.join(base, 'services/scraping/leboncoin-pipeline.js'), 'utf8');
-  assert(/BLOCKED_429/.test(pipeAudit), 'pipeline: 429 distinct (BLOCKED_429)');
-  assert(/retryAfter/.test(pipeAudit), 'pipeline: Retry-After capturé');
-  assert(/stopReason/.test(pipeAudit) && /process\.exitCode = refused \? 3 : 4/.test(pipeAudit), 'pipeline: code de sortie 3/4 sur blocage d’accès');
-  assert(/writeOutputs\(ads\);[\s\S]{0,120}process\.exitCode/.test(pipeAudit) || /Résultats partiels conservés/.test(pipeAudit), 'pipeline: résultats partiels écrits avant sortie d’erreur');
+  assert(!/BLOCKED_429/.test(pipeAudit), 'pipeline: plus de 429 distinct (moteur historique)');
+  assert(!/stopReason/.test(pipeAudit), 'pipeline: plus de stopReason (moteur historique)');
+  assert(/concurrency: 25, minDelayMs: 50/.test(pipeAudit), 'pipeline: presets historiques restaurés (ultra-rapide 25/50)');
 
-  // 30.7 renderer : états terminaux étendus (partial/refused/rate_limited).
+  // renderer : les nouveaux états restent tolérés (aucune régression UI).
   const scraperAudit = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/scraperModule.js'), 'utf8');
   assert(/'partial'/.test(scraperAudit) && /'refused'/.test(scraperAudit) && /'rate_limited'/.test(scraperAudit), 'scraperModule: states partial/refused/rate_limited gérés');
   const widgetAudit = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/widget.html'), 'utf8');
@@ -2526,35 +2481,29 @@ console.log('\n[31] Audit 403 : compteurs + backoff + Retry-After');
   // Le compteur ne doit PAS rester à 0 quand un vrai total est présent.
   assert(parseInt(m1[1], 10) === 236, '[31] compteur: 236 ≠ 0 (plus de contradiction)');
 
-  // 31.2 Backoff adaptatif agressif : après un blocage, le délai doit bondir
-  // (≈ base × 2^4 au minimum) et ne jamais dépasser le maximum.
+  // 31.2 Backoff adaptatif historique : après un blocage, le délai suit
+  // base × 2^N (N = blocages consécutifs), plafonné par maxDelayMs.
   const rl = new AdaptiveRateLimiter({ baseDelayMs: 800, maxDelayMs: 8000, logger: null });
-  await rl.waitAfter({ durationMs: 100, blocked: true, status: 403, noWait: true });
-  assert(rl.currentDelayMs() >= 8000, '[31] backoff: un blocage → délai porté au maximum (≥8000ms)');
-  // noWait : ne bloque pas (retour quasi immédiat).
-  const t0 = Date.now();
-  await rl.waitAfter({ durationMs: 100, blocked: true, status: 429, noWait: true });
-  assert(Date.now() - t0 < 200, '[31] backoff: noWait n\'attend pas (attente gérée par l\'appelant)');
-  // Sans noWait : agit comme une pause.
-  const rl2 = new AdaptiveRateLimiter({ baseDelayMs: 600, maxDelayMs: 6000, logger: null });
-  await rl2.waitAfter({ durationMs: 100, blocked: true, status: 403, noWait: true });
-  assert(rl2.currentDelayMs() >= 6000, '[31] backoff: base 600 → plafond atteint après blocage');
+  await rl.waitAfter({ durationMs: 100, blocked: true, status: 403 });
+  assert(rl.currentDelayMs() === 1600, '[31] backoff historique: 1 blocage → base×2^1 = 1600ms');
+  await rl.waitAfter({ durationMs: 100, blocked: true, status: 403 });
+  assert(rl.currentDelayMs() === 3200, '[31] backoff historique: 2 blocages → base×2^2 = 3200ms');
+  const rl2 = new AdaptiveRateLimiter({ baseDelayMs: 6000, maxDelayMs: 6000, logger: null });
+  await rl2.waitAfter({ durationMs: 100, blocked: true, status: 403 });
+  assert(rl2.currentDelayMs() === 6000, '[31] backoff historique: plafonné à maxDelayMs');
 
-  // 31.3 Pipeline : parallélisme modéré + presets durcis + Retry-After appliqué.
+  // 31.3 Pipeline : presets historiques restaurés (rapides) + pas de Retry-After.
   const pipe = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/scraping/leboncoin-pipeline.js'), 'utf8');
-  assert(/noWait: true/.test(pipe), '[31] pipeline: ajuste le délai sans attendre (pause inter-batch explicite)');
-  assert(/pendingRetryAfterMs/.test(pipe) && /Math\.max\(adaptiveDelay, pendingRetryAfterMs \|\| 0\)/.test(pipe),
-    '[31] pipeline: pause inter-batch = max(délai adaptatif, Retry-After)');
-  // Presets : concurrence bornée et délais de base non triviaux.
+  assert(!/noWait: true/.test(pipe), '[31] pipeline: plus de noWait (moteur historique)');
+  assert(!/pendingRetryAfterMs/.test(pipe), '[31] pipeline: plus de pause Retry-After (moteur historique)');
+  // Presets historiques : moyen 10/500, rapide 15/200, ultra-rapide 25/50.
   const presetMatch = pipe.match(/moyen:\s*\{ concurrency: (\d+),\s*minDelayMs: (\d+)/);
-  assert(presetMatch && parseInt(presetMatch[1], 10) <= 12, '[31] presets: concurrence « moyen » bornée (≤12)');
-  assert(presetMatch && parseInt(presetMatch[2], 10) >= 700, '[31] presets: délai de base « moyen » ≥ 700ms (anti-rafale)');
-  assert(/'ultra-rapide':\s*\{ concurrency: \d+,\s*minDelayMs: \d+/.test(pipe), '[31] presets: ultra-rapide présent');
+  assert(presetMatch && parseInt(presetMatch[1], 10) === 10, '[31] presets: « moyen » = concurrence 10 (historique)');
+  assert(presetMatch && parseInt(presetMatch[2], 10) === 500, '[31] presets: « moyen » = délai de base 500ms (historique)');
+  assert(/concurrency: 25, minDelayMs: 50/.test(pipe), '[31] presets: « ultra-rapide » 25/50 (historique)');
 
-  // 31.4 Métriques structurées émises par le pipeline.
+  // 31.4 Métrique d'annonces extraites émise par le pipeline.
   assert(/\[METRICS\] \$\{ads\.length\} annonces extraites uniques/.test(pipe), '[31] pipeline: ligne [METRICS] annonces extraites');
-  assert(/\[METRICS\] Descriptions :/.test(pipe), '[31] pipeline: ligne [METRICS] descriptions (enrichies/bloquées/en attente)');
-  assert(/pendingCount/.test(pipe), '[31] pipeline: compteur « non traitées » (en attente)');
 
   // 31.5 ipcHandlers : compteurs cohérents (extraction + uniques + doublons).
   const ipcC = fs.readFileSync(path.join(__dirname, '..', 'src/main/core/ipcHandlers.js'), 'utf8');

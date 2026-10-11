@@ -53,28 +53,20 @@ class AdaptiveRateLimiter {
    * @param {number} [result.status]   Code HTTP (optionnel)
    * @param {boolean} [result.blocked] True si 403/429
    * @param {boolean} [result.error]    True si erreur réseau
-   * @param {boolean} [result.noWait]   True pour ajuster le délai SANS attendre
-   *                                    (boucle parallèle : l'attente inter-batch
-   *                                    est gérée par l'appelant, pas par fetch).
    */
   async waitAfter(result) {
-    const { durationMs = 0, status = 0, blocked = false, error = false, noWait = false } = result;
+    const { durationMs = 0, status = 0, blocked = false, error = false } = result;
 
     if (blocked) {
       // Blocage explicite → backoff exponentiel agressif
       this._consecutiveBlocks++;
       this._consecutiveFastSuccess = 0;
-      // Ralentit AGRESSIVEMENT dès les premiers blocages : une séquence
-      // « 80 succès puis rafale de 403 » est une signature de limitation de débit.
-      // On saute directement à un palier élevé (base × 2^N, N≥4 → ×16) plutôt
-      // que de progresser lentement d'un cran par batch.
-      const exponent = Math.max(this._consecutiveBlocks, 4);
       const backoff = Math.min(
         this.maxDelayMs,
-        this.baseDelayMs * Math.pow(this.backoffFactor, exponent)
+        this.baseDelayMs * Math.pow(this.backoffFactor, this._consecutiveBlocks)
       );
       this._currentDelay = backoff;
-      this._log('warn', `Blocage détecté (HTTP ${status || '?'}). Backoff ×${this.backoffFactor}^${exponent} → ${Math.round(backoff)}ms.`);
+      this._log('warn', `Blocage détecté (HTTP ${status || '?'}). Backoff ×${this.backoffFactor}^${this._consecutiveBlocks} → ${Math.round(backoff)}ms.`);
     } else if (error) {
       // Erreur réseau → ralentir prudemment
       this._consecutiveBlocks = 0;
@@ -98,7 +90,6 @@ class AdaptiveRateLimiter {
       }
     }
 
-    if (noWait) return;
     await sleep(this._currentDelay);
   }
 

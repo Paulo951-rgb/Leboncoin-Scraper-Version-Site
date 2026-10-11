@@ -10,17 +10,6 @@ const { formatBytes, formatMs, describeError } = require('../../utils/diagnostic
 
 const { getRandomUserAgent } = require('./userAgents');
 const { ErrorCodes, createError } = require('./errorCodes');
-const { isSafeFetchDestination } = require('../../utils/urlSecurity');
-
-// Domaines Leboncoin légitimes : l'URL de recherche fournie par l'utilisateur
-// DOIT pointer vers l'un d'eux. C'est le principal point d'entrée réseau
-// contrôlable par l'utilisateur (protection SSRF) : sans ce contrôle, une URL
-// de recherche comme `http://169.254.169.254/...` serait naviguée par Chromium.
-const LEBONCOIN_SOURCE_HOSTS = [
-  'leboncoin.fr', 'www.leboncoin.fr',
-  'leboncoin.com', 'www.leboncoin.com',
-  'leboncoindirect.com', 'www.leboncoindirect.com',
-];
 
 function buildPageUrl(baseUrl, pageNumber) {
   try {
@@ -80,33 +69,8 @@ class HarCapturer extends EventEmitter {
     await ctx.addInitScript(() => {
       Object.defineProperty(navigator, 'webdriver', { get: () => undefined });
     });
-    await this._installNetworkGuard(ctx);
     const p = await ctx.newPage();
     return { ctx, p };
-  }
-
-  // Défense en profondeur sur les sous-requêtes : intercepte chaque requête du
-  // contexte et bloque les destinations structurellement dangereuses (IP
-  // privées/loopback/link-local littérales, hostnames locaux, schémas
-  // exotiques). On n'applique PAS d'allowlist ici : les CDN d'images/JS
-  // Leboncoin sont nécessaires au rendu et trop nombreux à énumérer.
-  //
-  // LIMITE ASSUMÉE : ce filtre ne fait pas de résolution DNS (un hostname
-  // arbitraire résolvant vers une IP privée n'est pas détecté ici). Playwright
-  // Python/Node ne réexpose pas l'IP de socket résolue de façon fiable. La
-  // protection réelle contre le rebinding DNS est hors de portée ; l'entrée
-  // utilisateur contrôlée (URL de recherche) est, elle, strictement limitée aux
-  // domaines Leboncoin dans capture().
-  async _installNetworkGuard(ctx) {
-    await ctx.route('**/*', (route) => {
-      const url = route.request().url();
-      const check = isSafeFetchDestination(url);
-      if (!check.safe) {
-        this.emit('log', { level: 'warn', message: `[network-guard] Requête bloquée : ${url} (${check.reason})` });
-        return route.abort('blockedbyclient').catch(() => {});
-      }
-      return route.continue().catch(() => {});
-    });
   }
 
   // Détecte un CAPTCHA / blocage sur la page. Vérifie plusieurs vecteurs :
@@ -166,94 +130,9 @@ class HarCapturer extends EventEmitter {
     }
   }
 
-  // Vérification RÉELLE de l'accès (autorisation effective), distincte de la
-  // simple « disparition visuelle » d'un CAPTCHA. On ne se fie pas à la
-  // disparition d'une iframe, d'un texte ou d'une URL : on effectue des requêtes
-  // autorisées (mêmes que celles du scraping normal) et on juge sur le STATUT
-  // HTTP + la validité du contenu. Une réponse 403/429 n'est JAMAIS un succès.
-  //
-  // Renvoie un objet structuré :
-  //   { verified: boolean, code, httpStatus, retryAfterMs, reason }
-  // où code ∈ { null, HTTP_403, HTTP_429, ACCESS_UNVERIFIED, CAPTCHA_DETECTED }.
-  //
-  // LIMITE ASSUMÉE : on ne tente pas de résoudre un CAPTCHA. Si un CAPTCHA est
-  // encore visible à l'écran, on ne peut affirmer l'accès → CAPTCHA_DETECTED.
-  async _verifyAccess(page, verifyUrl) {
-    // 1) CAPTCHA encore visible → access NON confirmé (jamais considéré comme OK).
-    const captchaBlocked = await this._checkCaptcha(page);
-    if (captchaBlocked) {
-      return { verified: false, code: ErrorCodes.CAPTCHA_DETECTED, httpStatus: null, retryAfterMs: null, reason: 'CAPTCHA encore présent à l\'écran' };
-    }
-
-    const url = verifyUrl || (page && page.url ? page.url() : null);
-    if (!url) {
-      return { verified: false, code: ErrorCodes.ACCESS_UNVERIFIED, httpStatus: null, retryAfterMs: null, reason: 'URL de vérification indisponible' };
-    }
-
-    // 2) Requête autorisée via l'API de la page (mêmes cookies + même UA que le
-    //    scraping, aucun signal d'automatisation ajouté, aucune navigation
-    //    parasite). On juge sur le STATUT HTTP réel.
-    let resp = null;
-    try {
-      resp = await page.request.get(url, { timeout: 20000, maxRedirects: 5, failOnStatusCode: false });
-    } catch (e) {
-      this.emit('log', { level: 'debug', message: `[verify] GET ${url} a échoué : ${e.message}` });
-      return { verified: false, code: ErrorCodes.ACCESS_UNVERIFIED, httpStatus: null, retryAfterMs: null, reason: `échec de la requête (${e.message})` };
-    }
-    if (!resp) {
-      return { verified: false, code: ErrorCodes.ACCESS_UNVERIFIED, httpStatus: null, retryAfterMs: null, reason: 'aucune réponse' };
-    }
-
-    const status = resp.status();
-    const retryAfterMs = this._parseRetryAfter(resp.headers ? resp.headers()['retry-after'] : null);
-
-    if (status === 403) {
-      return { verified: false, code: ErrorCodes.HTTP_403, httpStatus: 403, retryAfterMs: null, reason: 'HTTP 403 (accès refusé par le serveur)' };
-    }
-    if (status === 429) {
-      return { verified: false, code: ErrorCodes.HTTP_429, httpStatus: 429, retryAfterMs, reason: 'HTTP 429 (limitation de débit)' };
-    }
-    if (status >= 500) {
-      return { verified: false, code: ErrorCodes.HTTP_UNKNOWN, httpStatus: status, retryAfterMs: null, reason: `HTTP ${status} (erreur serveur)` };
-    }
-    if (status >= 400) {
-      return { verified: false, code: ErrorCodes.HTTP_UNKNOWN, httpStatus: status, retryAfterMs: null, reason: `HTTP ${status}` };
-    }
-
-    // 3) Statut 2xx : on valide le CONTENU (une page de blocage peut renvoyer 200).
-    await sleep(500);
-    let body = '';
-    try { body = await resp.text(); } catch { /* corps illisible : contrôles ci-dessous */ }
-    const captchaStillThere = await this._checkCaptcha(page);
-    const low = String(body).toLowerCase();
-    const bodyOk = low.trim().length > 40 &&
-      !/captcha|robot|restreint|vérification|unusual traffic|access denied|accès refusé|trop de requ|too many requests/.test(low);
-
-    if (captchaStillThere || !bodyOk) {
-      return { verified: false, code: ErrorCodes.CAPTCHA_DETECTED, httpStatus: status, retryAfterMs: null, reason: 'Contenu bloqué/illisible malgré un statut HTTP favorable' };
-    }
-
-    return { verified: true, code: null, httpStatus: status, retryAfterMs: null, reason: `HTTP ${status} - contenu valide` };
-  }
-
-  // Convertit un en-tête Retry-After (secondes ou date HTTP) en millisecondes.
-  _parseRetryAfter(value) {
-    if (value == null) return null;
-    const s = String(value).trim();
-    if (/^\d+$/.test(s)) return Math.min(parseInt(s, 10) * 1000, 5 * 60 * 1000);
-    const when = Date.parse(s);
-    if (!Number.isNaN(when)) return Math.max(0, Math.min(when - Date.now(), 5 * 60 * 1000));
-    return null;
-  }
-
-  // Pré-check Leboncoin : navigue en invisible, et si un blocage est détecté,
-  // bascule dans une fenêtre VISIBLE pour résolution humaine, puis VÉRIFIE
-  // RÉELLEMENT l'accès avant de persister la session.
-  //
-  // Renvoie un résultat structuré (jamais un booléen ambigu) :
-  //   { resolved, opened, verified, code, httpStatus, retryAfterMs, reason }
-  // L'accès n'est confirmé QUE si `verified === true` (statut HTTP favorable +
-  // contenu valide), JAMAIS sur la seule disparition visuelle du CAPTCHA.
+  // Pré-check Leboncoin : navigue en invisible, et si un CAPTCHA est détecté,
+  // bascule dans une fenêtre VISIBLE pour résolution humaine, puis revient en
+  // invisible. La session validée est persistée dans GLOBAL_SESSION_PATH.
   async _warmupSession(browser, checkUrl) {
     this.emit('log', { level: 'info', message: '🔍 Pré-check session : navigation invisible vers Leboncoin...' });
     this.emit('log', { level: 'debug', message: `[warmup] URL de vérification : ${checkUrl} | session existante : ${fs.existsSync(GLOBAL_SESSION_PATH) ? 'OUI (' + formatBytes(fs.statSync(GLOBAL_SESSION_PATH).size) + ')' : 'NON'}` });
@@ -269,6 +148,7 @@ class HarCapturer extends EventEmitter {
     let warmupStatus = null;
     // networkidle : attend que le réseau soit inactif → laisse le temps au JS de
     // rendre le CAPTCHA (Arkose/Cloudflare chargent après domcontentloaded).
+    // domcontentloaded était trop tôt : le CAPTCHA n'était pas encore rendu.
     await p.goto(checkUrl, { waitUntil: 'networkidle', timeout: 45000 })
       .then((resp) => { warmupStatus = resp ? resp.status() : null; })
       .catch((e) => {
@@ -282,13 +162,18 @@ class HarCapturer extends EventEmitter {
     await sleep(3000);
 
     // Un blocage peut se manifester par un CAPTCHA (texte/iframe/URL) OU par
-    // un code HTTP d'erreur (403/429).
+    // un code HTTP d'erreur (403/429). On vérifie les deux pour ne pas rater un
+    // blocage "silencieux" (403 sans page CAPTCHA).
     const captchaBlocked = await this._checkCaptcha(p);
     const httpBlocked = typeof warmupStatus === 'number' && warmupStatus >= 400;
     const blocked = captchaBlocked || httpBlocked;
 
+    if (httpBlocked && !captchaBlocked) {
+      this.emit('log', { level: 'warn', message: `[warmup] HTTP ${warmupStatus} détecté (blocage anti-bot sans CAPTCHA visible) — ouverture navigateur visible pour résolution manuelle.` });
+    }
+
     if (!blocked) {
-      // Pas de blocage : on persiste la session fraîche si elle n'existait pas,
+      // Pas de captcha : on persiste la session fraîche si elle n'existait pas,
       // AVANT de fermer le contexte (storageState sur un contexte fermé échoue).
       if (!fs.existsSync(GLOBAL_SESSION_PATH)) {
         await ctx.storageState({ path: GLOBAL_SESSION_PATH }).catch((e) => {
@@ -299,7 +184,7 @@ class HarCapturer extends EventEmitter {
       await p.close().catch(() => {});
       await ctx.close().catch(() => {});
       this.emit('log', { level: 'info', message: '✅ Pré-check OK : aucun CAPTCHA, reprise invisible.' });
-      return { resolved: true, opened: false, verified: true, code: null, httpStatus: warmupStatus, retryAfterMs: null, reason: 'pré-check sans blocage' };
+      return;
     }
 
     // Blocage détecté (CAPTCHA ou HTTP 403/429) : ferme le contexte invisible
@@ -307,26 +192,10 @@ class HarCapturer extends EventEmitter {
     await p.close().catch(() => {});
     await ctx.close().catch(() => {});
 
-    // Distinction honnête 403 (refus) / 429 (limitation) sans CAPTCHA visible.
-    if (httpBlocked && !captchaBlocked) {
-      if (warmupStatus === 403) {
-        this.emit('log', { level: 'warn', message: `⛔ [${ErrorCodes.HTTP_ACCESS_REFUSED}] Accès refusé par le serveur (HTTP 403).` });
-      } else if (warmupStatus === 429) {
-        this.emit('log', { level: 'warn', message: `⏳ [${ErrorCodes.HTTP_RATE_LIMITED}] Requête limitée (HTTP 429).` });
-      } else {
-        this.emit('log', { level: 'warn', message: `[warmup] HTTP ${warmupStatus} détecté (blocage anti-bot sans CAPTCHA visible).` });
-      }
-    }
-
-    this.emit('log', { level: 'info', message: '👤 Vérification du site en cours — une fenêtre va s\'ouvrir. Résolvez le défi manuellement ; le scraping reprendra automatiquement après confirmation effective de l\'accès.' });
-    this.emit('progress', { currentPage: 0, totalPages: 0, percent: 0, status: 'Vérification du site : veuillez résoudre dans la fenêtre ouverte...' });
-
-    // L'utilisateur a pu annuler pendant la navigation de pré-check : dans ce cas
-    // on n'ouvre PAS de fenêtre visible inutilement.
-    if (this.isCancelled) {
-      this.emit('log', { level: 'warn', message: `[warmup] [${ErrorCodes.CAPTCHA_UNRESOLVED}] Pré-check annulé par l'utilisateur — aucune fenêtre ouverte.` });
-      return { resolved: false, opened: false, verified: false, code: ErrorCodes.CAPTCHA_UNRESOLVED, httpStatus: warmupStatus, retryAfterMs: null, reason: 'annulé par l\'utilisateur' };
-    }
+    const captchaDetectedErr = createError(ErrorCodes.CAPTCHA_DETECTED, 'Blocage CAPTCHA détecté — affichage de la fenêtre (résolution humaine requise)');
+    this.emit('log', { level: 'warn', message: `⚠️ [${captchaDetectedErr.code}] Blocage CAPTCHA détecté — affichage de la fenêtre (résolution humaine requise).` });
+    this.emit('log', { level: 'info', message: '👤 Une fenêtre va s\'ouvrir. Résolvez le CAPTCHA manuellement — le scraping reprendra automatiquement.' });
+    this.emit('progress', { currentPage: 0, totalPages: 0, percent: 0, status: 'CAPTCHA : veuillez résoudre dans la fenêtre ouverte...' });
 
     // Relance un navigateur visible (le navigateur headless actuel ne peut pas
     // devenir visible à chaud) afin que l'utilisateur puisse interagir.
@@ -336,16 +205,24 @@ class HarCapturer extends EventEmitter {
       if (fs.existsSync(GLOBAL_SESSION_PATH)) vOpts.storageState = GLOBAL_SESSION_PATH;
       const { ctx: vCtx, p: vPage } = await this._newStealthContext(visibleBrowser, vOpts);
 
-      // Suivi du statut HTTP en temps réel (navigation document uniquement).
+      // 🛑 FIX CRITIQUE : suivre le statut HTTP en temps réel via les responses.
+      // Avant, vStatus était figé à la navigation initiale (souvent 403) et jamais
+      // mis à jour → la détection ne détectait JAMAIS la résolution et attendait
+      // les 10 minutes complètes. Maintenant on track la dernière réponse HTTP
+      // document dynamiquement, ce qui permet de confirmer la résolution
+      // (redirection post-CAPTCHA → HTTP 200).
       let latestHttpStatus = null;
       vPage.on('response', (resp) => {
+        // Ne track que les réponses de navigation principale (document), pas les
+        // sous-ressources (CSS/JS/images) qui peuvent renvoyer des codes trompeurs.
         if (resp.request().resourceType() === 'document') {
           latestHttpStatus = resp.status();
         }
       });
 
+      let vStatus = null;
       await vPage.goto(checkUrl, { waitUntil: 'networkidle', timeout: 60000 })
-        .then((resp) => { latestHttpStatus = resp ? resp.status() : latestHttpStatus; })
+        .then((resp) => { vStatus = resp ? resp.status() : null; latestHttpStatus = vStatus; })
         .catch((e) => {
           this.emit('log', { level: 'warn', message: `[warmup] Navigation fenêtre visible échouée : ${e.message}` });
         });
@@ -353,19 +230,30 @@ class HarCapturer extends EventEmitter {
       // Attend que le CAPTCHA soit rendu avant de demander la résolution.
       await sleep(2000);
 
-      // On NE RECHARGE PAS la page pendant la résolution : on POLLE le contenu
-      // (innerText/URL/iframes) sans reload pour laisser l'utilisateur résoudre.
-      const checkVBlocked = async () => this._checkCaptcha(vPage);
+      // Vérifie le blocage : CAPTCHA (texte/iframe/URL) uniquement.
+      // 🛑 On NE vérifie PLUS le statut HTTP figé (vStatus) pendant le polling :
+      // il reste à 403 même après résolution car la navigation initiale est restée
+      // bloquée. On se fie au contenu (iframe/texte/URL) qui change quand
+      // l'utilisateur résout le CAPTCHA → la page se redirige vers les résultats.
+      const checkVBlocked = async () => {
+        return this._checkCaptcha(vPage);
+      };
 
+      let isBlocked = await checkVBlocked();
       let waitAttempts = 0;
       const POLL_INTERVAL_MS = 2000; // 2s pour une détection rapide
       const MAX_WAIT_MS = 10 * 60 * 1000; // 10 min max (sécurité)
       const startTime = Date.now();
 
-      this.emit('log', { level: 'info', message: `[warmup] Fenêtre de vérification ouverte. Résolvez le défi — suivi automatique (polling ${POLL_INTERVAL_MS / 1000}s). Maximum ${Math.round(MAX_WAIT_MS / 60000)} min.` });
+      this.emit('log', { level: 'info', message: `[warmup] Fenêtre CAPTCHA ouverte. Résolvez le défi — la détection est automatique (polling ${POLL_INTERVAL_MS / 1000}s). Maximum ${Math.round(MAX_WAIT_MS / 60000)} min.` });
 
-      let visualClear = false;
-      while (!visualClear && !this.isCancelled) {
+      // 🛑 FIX CLEF : on NE RECHARGE PAS la page pendant la résolution.
+      // L'ancien code faisait vPage.reload() toutes les 2s → l'utilisateur ne
+      // pouvait pas résoudre le CAPTCHA (la page se réinitialisait en continu).
+      // On se contente de POLLER le contenu de la page (innerText/URL/iframes)
+      // sans recharger, pour détecter quand l'utilisateur a résolu le défi.
+      let confirmedClear = false;
+      while (!confirmedClear && !this.isCancelled) {
         waitAttempts++;
         const elapsed = Date.now() - startTime;
         if (elapsed > MAX_WAIT_MS) {
@@ -373,77 +261,83 @@ class HarCapturer extends EventEmitter {
           break;
         }
         if (waitAttempts % 10 === 0) {
-          this.emit('log', { level: 'debug', message: `[warmup] En attente de résolution... (${Math.round(elapsed / 1000)}s écoulées).` });
+          const totalSec = Math.round((elapsed) / 1000);
+          this.emit('log', { level: 'debug', message: `[warmup] En attente de résolution... (${totalSec}s écoulées).` });
         }
         await sleep(POLL_INTERVAL_MS);
 
+        // Poll SANS reload : l'utilisateur résout le CAPTCHA → le DOM change
+        // (les marqueurs disparaissent, l'iframe est retirée, ou l'URL change
+        // suite à une redirection automatique).
         const stillBlocked = await checkVBlocked();
+
         if (!stillBlocked) {
-          // Confirmation anti-faux-positif : on attend 2s et on re-vérifie.
-          this.emit('log', { level: 'debug', message: '[warmup] Défi visuellement résolu — confirmation (2s)...' });
+          // 🛑 FIX : confirmation pour éviter les faux positifs.
+          // Leboncoin peut brièvement retirer l'iframe CAPTCHA pendant une
+          // transition (animation, redirection intermédiaire). On attend 2s et
+          // on re-vérifie : si toujours non bloqué → résolution confirmée.
+          this.emit('log', { level: 'debug', message: '[warmup] CAPTCHA semble résolu — confirmation (2s)...' });
           await sleep(2000);
           const recheck = await checkVBlocked();
           if (!recheck) {
-            visualClear = true;
+            confirmedClear = true;
           } else {
-            this.emit('log', { level: 'debug', message: '[warmup] Faux positif — défi toujours présent, reprise de l\'attente.' });
+            this.emit('log', { level: 'debug', message: '[warmup] Faux positif — CAPTCHA toujours présent, reprise de l\'attente.' });
           }
         }
       }
 
       if (this.isCancelled) {
-        this.emit('log', { level: 'warn', message: `[warmup] [${ErrorCodes.CAPTCHA_UNRESOLVED}] Vérification annulée par l'utilisateur — session non persistée.` });
-        // NE PAS persister : on est encore bloqué (cookies anti-bot).
+        const cancelErr = createError(ErrorCodes.CAPTCHA_UNRESOLVED, 'Résolution annulée par l\'utilisateur');
+        this.emit('log', { level: 'warn', message: `[warmup] [${cancelErr.code}] Résolution annulée par l\'utilisateur.` });
+        // NE PAS persister la session : on est encore bloqué (CAPTCHA non résolu),
+        // persister reviendrait à sauvegarder une session avec des cookies anti-bot
+        // qui empoisonneraient tous les jobs suivants. On ferme sans storageState.
         await vPage.close().catch(() => {});
         await vCtx.close().catch(() => {});
-        return { resolved: false, opened: true, verified: false, code: ErrorCodes.CAPTCHA_UNRESOLVED, httpStatus: latestHttpStatus, retryAfterMs: null, reason: 'annulé par l\'utilisateur' };
+        return;
       }
 
-      if (!visualClear) {
-        this.emit('log', { level: 'warn', message: `[warmup] [${ErrorCodes.CAPTCHA_TIMEOUT}] Vérification non résolue dans le délai — session non persistée.` });
+      if (!confirmedClear) {
+        // Timeout atteint sans résolution — on ne persiste pas la session.
+        const timeoutErr = createError(ErrorCodes.CAPTCHA_TIMEOUT, `CAPTCHA non résolu dans le délai (${Math.round(MAX_WAIT_MS / 60000)} min) — session non persistée`);
+        this.emit('log', { level: 'warn', message: `[warmup] [${timeoutErr.code}] CAPTCHA non résolu dans le délai — session non persistée.` });
         await vPage.close().catch(() => {});
         await vCtx.close().catch(() => {});
-        return { resolved: false, opened: true, verified: false, code: ErrorCodes.CAPTCHA_TIMEOUT, httpStatus: latestHttpStatus, retryAfterMs: null, reason: 'délai dépassé' };
+        return;
       }
 
-      // ⚠️ POINT CRITIQUE : la disparition visuelle du défi NE prouve PAS que
-      // l'accès est autorisé (un HTTP 403/429 peut persister). On effectue donc
-      // une VÉRIFICATION RÉELLE de l'accès avant toute persistance.
-      this.emit('log', { level: 'info', message: `[warmup] Défi disparu — vérification réelle de l'accès (HTTP ${latestHttpStatus || '?'})...` });
-      // Stabilisation : Leboncoin redirige/recharge après la résolution.
-      await vPage.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      const elapsedSec = Math.round((Date.now() - startTime) / 1000);
+      this.emit('log', { level: 'info', message: `[warmup] ✅ [${ErrorCodes.CAPTCHA_DETECTED}] CAPTCHA résolu après ${elapsedSec}s (HTTP ${latestHttpStatus || '?'}) — stabilisation de la session...` });
+
+      // FIX POST-CAPTCHA : attendre que la page se stabilise complètement
+      // avant de persister la session. Leboncoin redirige ou recharge la page
+      // après résolution — si on sauvegarde trop tôt, on capture une session
+      // incomplète (sans le cookie de validation) → erreur au prochain goto.
+      try {
+        await vPage.waitForLoadState('networkidle', { timeout: 10000 }).catch(() => {});
+      } catch { /* timeout networkidle acceptable */ }
+      // Grace period courte : Leboncoin peut définir des cookies supplémentaires
+      // après la redirection post-CAPTCHA.
       await sleep(1500);
 
-      const verification = await this._verifyAccess(vPage, checkUrl);
-
-      if (!verification.verified) {
-        const refused = verification.code === ErrorCodes.HTTP_403;
-        const limited = verification.code === ErrorCodes.HTTP_429;
-        if (limited && verification.retryAfterMs) {
-          this.emit('log', { level: 'warn', message: `[warmup] Retry-After indiqué par le serveur : ${Math.round(verification.retryAfterMs / 1000)}s (aucune reprise automatique).` });
-        }
-        const label = refused ? 'Accès refusé par le serveur (HTTP 403)'
-          : limited ? 'Requête limitée (HTTP 429)'
-          : `Session non validée (${verification.reason})`;
-        this.emit('log', { level: 'warn', message: `[warmup] [${verification.code || ErrorCodes.ACCESS_UNVERIFIED}] ${label} — session non persistée.` });
+      // Re-vérifie une dernière fois : Leboncoin peut afficher un 2e CAPTCHA
+      // consécutif (anti-bot agressif). Si oui, on ne persiste PAS.
+      const stillBlocked = await checkVBlocked();
+      if (stillBlocked) {
+        const secondCaptchaErr = createError(ErrorCodes.CAPTCHA_UNRESOLVED, 'Un 2e CAPTCHA consécutif est apparu — session non persistée. Relancez le scraping.');
+        this.emit('log', { level: 'warn', message: `[warmup] [${secondCaptchaErr.code}] Un 2e CAPTCHA consécutif est apparu — session non persistée. Relancez le scraping.` });
         await vPage.close().catch(() => {});
         await vCtx.close().catch(() => {});
-        return {
-          resolved: true, opened: true, verified: false,
-          code: verification.code || ErrorCodes.ACCESS_UNVERIFIED,
-          httpStatus: verification.httpStatus != null ? verification.httpStatus : latestHttpStatus,
-          retryAfterMs: verification.retryAfterMs || null,
-          reason: verification.reason,
-        };
+        return;
       }
 
-      // Accès CONFIRMÉ : persiste la session validée pour les jobs suivants.
+      // Persiste la session validée pour les jobs suivants (plus de fenêtre visible).
       await vCtx.storageState({ path: GLOBAL_SESSION_PATH });
       this.emit('log', { level: 'debug', message: `[warmup] Session validée persistée : ${GLOBAL_SESSION_PATH} (${formatBytes(fs.statSync(GLOBAL_SESSION_PATH).size)})` });
       await vPage.close().catch(() => {});
       await vCtx.close().catch(() => {});
-      this.emit('log', { level: 'info', message: `✅ [${verification.httpStatus || 200}] Accès confirmé et session persistée — reprise du scraping invisible.` });
-      return { resolved: true, opened: true, verified: true, code: null, httpStatus: verification.httpStatus, retryAfterMs: null, reason: verification.reason };
+      this.emit('log', { level: 'info', message: '✅ CAPTCHA résolu et session persistée — reprise du scraping invisible.' });
     } finally {
       await visibleBrowser.close().catch(() => {});
     }
@@ -451,13 +345,6 @@ class HarCapturer extends EventEmitter {
 
   async capture({ searchUrl, maxPages = 1, outputHarPath }) {
     if (!searchUrl) throw new Error("L'URL de recherche est requise.");
-    // Contrôle de destination (SSRF) AVANT tout lancement de navigateur :
-    // protocole http(s), pas d'IP privée/locale, et domaine Leboncoin imposé.
-    const destCheck = isSafeFetchDestination(searchUrl, LEBONCOIN_SOURCE_HOSTS);
-    if (!destCheck.safe) {
-      const err = createError(ErrorCodes.NET_CONNECTION_FAILED, `URL de recherche refusée : ${destCheck.reason}`, { url: searchUrl, reason: destCheck.reason });
-      throw Object.assign(new Error(err.message), { _code: err.code });
-    }
     const targetDir = path.dirname(outputHarPath);
     fs.mkdirSync(targetDir, { recursive: true });
     const statePath = path.join(targetDir, 'session-state.json');
@@ -469,44 +356,24 @@ class HarCapturer extends EventEmitter {
     let context;
     let page;
 
-    // Suivi honnête de l'état de capture (résultat structuré renvoyé au main).
-    let pagesCaptured = 0;
-    let blockedCode = null;
-    let blockedHttpStatus = null;
-    let blockedReason = null;
-
     try {
       browser = await chromium.launch(this._launchOptions(true));
       this.emit('log', { level: 'debug', message: '[capture] Chromium lancé (headless=true pour la capture).' });
 
       let globalSessionSaved = false;
 
-      // Pré-check : vérifie réellement l'accès avant la boucle HAR. Si l'accès
-      // n'est PAS confirmé (refus 403, limitation 429, session non validée),
-      // on N'entre PAS dans la boucle de capture : lancer la capture produirait
-      // un HAR vide et un faux « succès ».
-      const warmupResult = await this._warmupSession(browser, buildPageUrl(searchUrl, 1));
+      // Pré-check captcha + bascule visible si nécessaire (avant la boucle HAR).
+      await this._warmupSession(browser, buildPageUrl(searchUrl, 1));
       if (this.isCancelled) {
         this.emit('log', { level: 'debug', message: '[capture] Capture annulée après pré-check (isCancelled=true).' });
         await browser.close().catch(() => {});
-        return { harPath: outputHarPath, pagesCaptured: 0, blocked: false, cancelled: true, blockedCode: null, httpStatus: null, retryAfterMs: null, note: 'annulé' };
-      }
-      if (warmupResult && warmupResult.verified === false) {
-        this.emit('log', { level: 'warn', message: `[capture] Accès NON confirmé après vérification (${warmupResult.code || 'ACCESS_UNVERIFIED'}) — capture annulée sans lancer de scraping.` });
-        await browser.close().catch(() => {});
-        return {
-          harPath: outputHarPath,
-          pagesCaptured: 0,
-          blocked: true,
-          cancelled: false,
-          blockedCode: warmupResult.code || ErrorCodes.ACCESS_UNVERIFIED,
-          httpStatus: warmupResult.httpStatus != null ? warmupResult.httpStatus : null,
-          retryAfterMs: warmupResult.retryAfterMs || null,
-          note: warmupResult.reason || 'accès non confirmé',
-        };
+        return outputHarPath;
       }
 
-      // Délai entre warmup et capture pour laisser le rate-limiter se réinitialiser.
+      // 🛑 FIX : délai entre warmup et capture. Les logs montraient que le
+      // warmup (HTTP 200) et la capture (HTTP 403) arrivaient dans la même
+      // seconde → Leboncoin rate-limitait la requête trop rapide. Un délai de
+      // 2s laisse le temps au rate-limiter de Leboncoin de se réinitialiser.
       this.emit('log', { level: 'debug', message: '[capture] Délai de sécurité (2s) après warmup pour éviter le rate-limit Leboncoin.' });
       await sleep(2000);
 
@@ -548,35 +415,39 @@ class HarCapturer extends EventEmitter {
 
         try {
           const resp = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 35000 });
-          const httpStatus = resp ? resp.status() : null;
-          this.emit('log', { level: 'debug', message: `[Page ${pageNum}] Page chargée — HTTP ${httpStatus ?? '?'}.` });
+          const httpStatus = resp ? resp.status() : '?';
+          this.emit('log', { level: 'debug', message: `[Page ${pageNum}] Page chargée — HTTP ${httpStatus}.` });
 
-          // Best-effort networkidle avant la détection CAPTCHA.
+          // Sauvegarde la session globale dès la 1ère page réussie (HTTP < 400).
+          // On NE la réécrit PAS ensuite : les pages suivantes peuvent être 403
+          // (anti-bot) et empoisonneraient la session avec des cookies de blocage.
+          if (typeof httpStatus === 'number' && httpStatus < 400 && !globalSessionSaved) {
+            await context.storageState({ path: GLOBAL_SESSION_PATH }).catch((e) => {
+              this.emit('log', { level: 'warn', message: `[capture] Sauvegarde session globale impossible après page ${pageNum} : ${e.message}` });
+            });
+            globalSessionSaved = true;
+            this.emit('log', { level: 'debug', message: `[capture] Session globale sauvegardée après page ${pageNum} (HTTP ${httpStatus}).` });
+          }
+
+          // Best-effort networkidle avant la détection CAPTCHA : les iframes
+          // Arkose/Cloudflare chargent après domcontentloaded. Sans ce délai,
+          // on peut rater un CAPTCHA qui n'est pas encore rendu.
           await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
 
-          // DÉTECTION DE BLOCAGE : CAPTCHA (texte/iframe/URL) OU HTTP >= 400.
+          // 🤖 DÉTECTION DE BLOCAGE : CAPTCHA (texte/iframe/URL) OU HTTP >= 400.
+          // Un 403 sans texte CAPTCHA est un blocage silencieux : on arrête
+          // immédiatement au lieu de gaspiller des requêtes sur les pages suivantes.
           const captchaBlocked = await this._checkCaptcha(page);
           const httpBlocked = typeof httpStatus === 'number' && httpStatus >= 400;
-
-          if (!captchaBlocked && !httpBlocked) {
-            // Page exploitée : on incrémente le compteur AVANT de sauver la
-            // session globale (sauvegarde uniquement sur page réellement réussie).
-            pagesCaptured++;
-            if (!globalSessionSaved) {
-              await context.storageState({ path: GLOBAL_SESSION_PATH }).catch((e) => {
-                this.emit('log', { level: 'warn', message: `[capture] Sauvegarde session globale impossible après page ${pageNum} : ${e.message}` });
-              });
-              globalSessionSaved = true;
-              this.emit('log', { level: 'debug', message: `[capture] Session globale sauvegardée après page ${pageNum} (HTTP ${httpStatus}).` });
-            }
-          } else {
+          if (captchaBlocked || httpBlocked) {
             const reason = httpBlocked ? `HTTP ${httpStatus}` : 'CAPTCHA';
-            const blockCode = httpBlocked
-              ? (httpStatus === 403 ? ErrorCodes.HTTP_ACCESS_REFUSED : httpStatus === 429 ? ErrorCodes.HTTP_RATE_LIMITED : ErrorCodes.HTTP_UNKNOWN)
-              : ErrorCodes.CAPTCHA_DETECTED;
-            this.emit('log', { level: 'warn', message: `⚠️ [Page ${pageNum}] [${blockCode}] Blocage détecté (${reason}) — vérification interactive...` });
+            const blockCode = httpBlocked ? (httpStatus === 403 ? ErrorCodes.HTTP_403 : httpStatus === 429 ? ErrorCodes.HTTP_429 : ErrorCodes.HTTP_UNKNOWN) : ErrorCodes.CAPTCHA_DETECTED;
+            const blockErr = createError(blockCode, `BLOCAGE DÉTECTÉ (${reason}) — tentative de résolution interactive`, { page: pageNum, httpStatus, reason });
+            this.emit('log', { level: 'warn', message: `⚠️ [Page ${pageNum}] [${blockErr.code}] BLOCAGE DÉTECTÉ (${reason}) — tentative de résolution interactive...` });
 
-            // Ferme le contexte HAR, ouvre une fenêtre visible de vérification.
+            // Au lieu d'abandonner, on tente une résolution interactive :
+            // ferme le contexte HAR, ouvre une fenêtre visible, puis relance
+            // la capture depuis la page bloquée.
             await page.close().catch(() => {});
             await context.close().catch(() => {});
             context = null;
@@ -584,31 +455,22 @@ class HarCapturer extends EventEmitter {
             await browser.close().catch(() => {});
             browser = null;
 
-            this.emit('log', { level: 'info', message: '[capture] Ouverture de la fenêtre de vérification (pendant la capture)...' });
+            // _warmupSession ouvre un navigateur visible, attend la résolution,
+            // persiste la session, puis ferme. Si résolu, on relance la capture.
+            this.emit('log', { level: 'info', message: '[capture] Ouverture fenêtre de résolution CAPTCHA (pendant la capture)...' });
             const retryBrowser = await chromium.launch(this._launchOptions(true));
-            let retryResult = null;
             try {
-              retryResult = await this._warmupSession(retryBrowser, buildPageUrl(searchUrl, pageNum));
+              await this._warmupSession(retryBrowser, buildPageUrl(searchUrl, pageNum));
             } finally {
               await retryBrowser.close().catch(() => {});
             }
 
             if (this.isCancelled) {
-              this.emit('log', { level: 'debug', message: '[capture] Capture annulée pendant la vérification.' });
-              return { harPath: outputHarPath, pagesCaptured, blocked: false, cancelled: true, blockedCode: null, httpStatus: null, retryAfterMs: null, note: 'annulé' };
+              this.emit('log', { level: 'debug', message: '[capture] Capture annulée pendant résolution CAPTCHA.' });
+              return outputHarPath;
             }
 
-            // L'accès n'est repris QUE s'il est réellement confirmé. Sinon on
-            // arrête la capture sans relancer de requête (pas de boucle).
-            if (!retryResult || retryResult.verified !== true) {
-              blockedCode = (retryResult && retryResult.code) || blockCode;
-              blockedHttpStatus = (retryResult && retryResult.httpStatus != null) ? retryResult.httpStatus : (typeof httpStatus === 'number' ? httpStatus : null);
-              blockedReason = (retryResult && retryResult.reason) || reason;
-              this.emit('log', { level: 'warn', message: `[capture] Accès toujours non confirmé (${blockedCode}) — arrêt de la capture sans nouvelle tentative.` });
-              break;
-            }
-
-            // Accès confirmé : relance le navigateur + contexte HAR et reprend.
+            // Relance le navigateur et le contexte HAR, puis reprend à la page bloquée.
             browser = await chromium.launch(this._launchOptions(true));
             const retryCtxOpts = this._baseContextOptions({
               recordHar: { path: outputHarPath, mode: 'full', urlFilter: /recherche|api|items/i },
@@ -618,19 +480,13 @@ class HarCapturer extends EventEmitter {
               this.emit('log', { level: 'info', message: '🔑 Session validée chargée pour reprise de capture.' });
             }
             ({ ctx: context, p: page } = await this._newStealthContext(browser, retryCtxOpts));
-            this.emit('log', { level: 'info', message: `[capture] Reprise après confirmation d'accès — page ${pageNum}.` });
+            this.emit('log', { level: 'info', message: `[capture] Reprise après résolution CAPTCHA — page ${pageNum}.` });
+            // Ne pas retry cette page dans la boucle : on la capture à nouveau.
             const retryResp = await page.goto(targetUrl, { waitUntil: 'domcontentloaded', timeout: 35000 }).catch((e) => {
               this.emit('log', { level: 'warn', message: `[Page ${pageNum}] Reprise échouée : ${e.message}` });
             });
-            const retryStatus = retryResp ? retryResp.status() : null;
-            this.emit('log', { level: 'debug', message: `[Page ${pageNum}] Reprise — HTTP ${retryStatus ?? '?'}.` });
-            if (typeof retryStatus === 'number' && retryStatus < 400) pagesCaptured++;
-            else {
-              blockedCode = typeof retryStatus === 'number' && retryStatus === 403 ? ErrorCodes.HTTP_ACCESS_REFUSED : (typeof retryStatus === 'number' && retryStatus === 429 ? ErrorCodes.HTTP_RATE_LIMITED : ErrorCodes.ACCESS_UNVERIFIED);
-              blockedHttpStatus = typeof retryStatus === 'number' ? retryStatus : null;
-              blockedReason = `reprise HTTP ${retryStatus ?? '?'}`;
-              break;
-            }
+            const retryStatus = retryResp ? retryResp.status() : '?';
+            this.emit('log', { level: 'debug', message: `[Page ${pageNum}] Reprise — HTTP ${retryStatus}.` });
           }
         } catch (gotoErr) {
           this.emit('log', { level: 'warn', message: `[Page ${pageNum}] Avertissement : ${gotoErr.message}` });
@@ -648,37 +504,25 @@ class HarCapturer extends EventEmitter {
       await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
 
       // Session locale (par-job) : toujours sauvegardée pour le pipeline d'enrichissement.
-      // La session globale a déjà été sauvegardée après la 1ère page réellement réussie.
+      // La session globale (GLOBAL_SESSION_PATH) a déjà été sauvegardée après la 1ère page
+      // réussie ci-dessus — on ne l'écrase PAS ici pour éviter de la corrompre avec d'éventuels
+      // cookies anti-bot accumulés sur les pages suivantes (403).
       await context.storageState({ path: statePath });
+
       await context.close();
       await browser.close();
       browser = null;
-      this.emit('log', { level: 'info', message: `✅ Session synchronisée (${pagesCaptured} page(s) exploitée(s)).` });
+      this.emit('log', { level: 'info', message: `✅ Session synchronisée.` });
 
-      // Diagnostic final : taille du HAR généré.
-      let harSize = null;
+      // Diagnostic final : taille du HAR généré
       if (fs.existsSync(outputHarPath)) {
-        harSize = fs.statSync(outputHarPath).size;
+        const harSize = fs.statSync(outputHarPath).size;
         this.emit('log', { level: 'debug', message: `[capture] HAR généré : ${outputHarPath} (${formatBytes(harSize)}).` });
       } else {
         this.emit('log', { level: 'warn', message: `[capture] ⚠️ Le fichier HAR n'a pas été créé : ${outputHarPath}` });
       }
 
-      return {
-        harPath: outputHarPath,
-        pagesCaptured,
-        // « blocked » = AUCUNE page exploitable. Si des pages ont été capturées
-        // avant le blocage, on laisse le pipeline traiter le HAR partiel (les
-        // annonces valides sont préservées) ; le blocage sera traité côté
-        // enrichissement.
-        blocked: blockedCode != null && pagesCaptured === 0,
-        cancelled: false,
-        blockedCode,
-        httpStatus: blockedHttpStatus,
-        retryAfterMs: null,
-        note: blockedReason,
-        harSize,
-      };
+      return outputHarPath;
     } catch (err) {
       this.emit('log', { level: 'error', message: `❌ Erreur : ${err.message}` });
       this.emit('log', { level: 'debug', message: `[capture] Détail erreur fatale : ${describeError(err)}` });

@@ -549,8 +549,7 @@ class DescriptionEnricher {
               headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
             }, timeoutMs);
             if (!res.ok) {
-              if (res.status === 429) results[item.id] = { error: 'BLOCKED_429', retryAfter: res.headers.get('retry-after') || null };
-              else if (res.status === 403) results[item.id] = { error: 'BLOCKED_403' };
+              if (res.status === 403 || res.status === 429) results[item.id] = { error: 'BLOCKED_403' };
               else results[item.id] = { error: 'HTTP_' + res.status };
             } else {
               const html = await res.text();
@@ -575,8 +574,7 @@ class DescriptionEnricher {
               headers: { 'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8' },
             }, timeoutMs);
             if (!res.ok) {
-              if (res.status === 429) results[item.id] = { error: 'BLOCKED_429', retryAfter: res.headers.get('retry-after') || null };
-              else if (res.status === 403) results[item.id] = { error: 'BLOCKED_403' };
+              if (res.status === 403 || res.status === 429) results[item.id] = { error: 'BLOCKED_403' };
               else results[item.id] = { error: 'HTTP_' + res.status };
             } else {
               const html = await res.text();
@@ -694,11 +692,6 @@ class DescriptionEnricher {
     let notFoundCount = 0;
     let httpErrorCount = 0;
     let blockedCount = 0;
-    // Motif d'arrêt explicite : permet de distinguer un 403 (refus) d'un 429
-    // (limitation) pour un code de sortie honnête.
-    let stopReason = null; // 'HTTP_403' | 'HTTP_429' | null
-    let retryAfterMs = null;
-    let pendingRetryAfterMs = null; // appliqué une seule fois (pause inter-batch)
     const concurrency = this.opts.concurrency || 10;
     let batchIndex = 0;
 
@@ -747,21 +740,12 @@ class DescriptionEnricher {
             this.logger.warn(`⚠️ [${done}/${targets.length}] Description non trouvée sur ${ad.id}`);
             this.logger.debug(`[DescriptionEnricher] HTML reçu (${formatBytes(res.html.length)}) mais pas de __NEXT_DATA__ ou pas de body pour l'ID ${ad.id}.`);
           }
-        } else if (res && (res.error === 'BLOCKED_403' || res.error === 'BLOCKED_429')) {
+        } else if (res && res.error === 'BLOCKED_403') {
           blockedCount++;
           this.consecutiveBlocks++;
-          const isRateLimited = res.error === 'BLOCKED_429';
-          const blockCode = isRateLimited ? ErrorCodes.HTTP_RATE_LIMITED : ErrorCodes.HTTP_ACCESS_REFUSED;
-          if (isRateLimited) {
-            stopReason = 'HTTP_429';
-            const ra = typeof res.retryAfter === 'string' ? res.retryAfter : null;
-            const parsedRa = ra && /^\d+$/.test(ra.trim()) ? parseInt(ra.trim(), 10) * 1000 : null;
-            if (parsedRa != null) { retryAfterMs = parsedRa; pendingRetryAfterMs = parsedRa; }
-            this.logger.warn(`🛑 [${done}/${targets.length}] [${blockCode}] Requête limitée (HTTP 429) sur ${ad.id}${ra ? ` — Retry-After ${ra}` : ''}`);
-          } else {
-            if (stopReason !== 'HTTP_429') stopReason = 'HTTP_403';
-            this.logger.warn(`🛑 [${done}/${targets.length}] [${blockCode}] Accès refusé (HTTP 403) sur ${ad.id} — ${truncate(ad.url, 60)}`);
-          }
+          const blockCode = res.error === 'BLOCKED_403' ? ErrorCodes.HTTP_403 : ErrorCodes.HTTP_429;
+          const blockErr = createError(blockCode, `Bloqué (HTTP 403/429) sur ${ad.id} — ${truncate(ad.url, 60)}`, { adId: ad.id, url: ad.url });
+          this.logger.warn(`🛑 [${done}/${targets.length}] [${blockErr.code}] Bloqué (HTTP 403/429) sur ${ad.id} — ${truncate(ad.url, 60)}`);
           if (this.consecutiveBlocks >= 3) {
             this.shouldStopAll = true;
             this.logger.warn('\n🛑 Blocage détecté. Arrêt préventif.');
@@ -784,37 +768,23 @@ class DescriptionEnricher {
         }
       }
 
-      if (done % 10 === 0 || done === targets.length) writeOutputs(ads);
-      // Rate limiting adaptatif : on ajuste le délai selon le résultat du batch
-      // (backoff exponentiel si blocage, accélération si succès rapides) SANS
-      // attendre ici — l'attente est faite juste après, explicitement, afin de
-      // pouvoir respecter l'en-tête Retry-After fourni par le serveur.
+      if (done % 10 === 0) writeOutputs(ads);
+      // Rate limiting adaptatif : on signale le résultat du batch au limiteur
+      // qui ajuste dynamiquement le délai (backoff exponentiel si blocage,
+      // accélération si succès rapides). Remplace le randomDelay fixe.
       const batchDuration = Date.now() - t0Batch;
-      const batchHadBlock = batch.some((ad) => results[ad.id]?.error === 'BLOCKED_403' || results[ad.id]?.error === 'BLOCKED_429');
+      const batchHadBlock = batch.some((ad) => results[ad.id]?.error === 'BLOCKED_403');
       const batchHadError = batch.some((ad) => {
         const e = results[ad.id]?.error;
-        return e && e !== 'BLOCKED_403' && e !== 'BLOCKED_429' && !e.startsWith('HTTP_');
+        return e && e !== 'BLOCKED_403' && !e.startsWith('HTTP_');
       });
       if (batchHadBlock) {
-        await this.rateLimiter.waitAfter({ durationMs: batchDuration, blocked: true, status: 403, noWait: true });
+        await this.rateLimiter.waitAfter({ durationMs: batchDuration, blocked: true, status: 403 });
       } else if (batchHadError) {
-        await this.rateLimiter.waitAfter({ durationMs: batchDuration, error: true, noWait: true });
+        await this.rateLimiter.waitAfter({ durationMs: batchDuration, error: true });
       } else {
-        await this.rateLimiter.waitAfter({ durationMs: batchDuration, noWait: true });
+        await this.rateLimiter.waitAfter({ durationMs: batchDuration });
       }
-
-      // Respect de Retry-After : si le serveur a fourni un délai, on attend AU
-      // MOINS ce délai avant de lancer le batch suivant (aucune reprise avant
-      // l'heure indiquée, aucune accélération au-delà).
-      const adaptiveDelay = this.rateLimiter.currentDelayMs();
-      const waitMs = Math.max(adaptiveDelay, pendingRetryAfterMs || 0);
-      if (waitMs > 0 && i + concurrency < targets.length) {
-        this.logger.debug(`[DescriptionEnricher] Pause inter-batch ${Math.round(waitMs)}ms${pendingRetryAfterMs ? ` (Retry-After ${Math.round(pendingRetryAfterMs)}ms respecté)` : ''} — prochain délai adaptatif ${adaptiveDelay}ms.`);
-        await sleep(waitMs);
-      }
-      // Le délai Retry-After du serveur ne s'applique qu'une fois (le suivant
-      // repart sur le backoff adaptatif courant).
-      pendingRetryAfterMs = null;
 
       if (done > 0 && done % this.opts.recycleContextEvery === 0 && i + concurrency < targets.length) {
         this.logger.info(`🔄 Purge mémoire RAM (${done} items)...`);
@@ -846,20 +816,6 @@ class DescriptionEnricher {
     writeOutputs(ads);
     this.logger.info(`Session terminée : ${successCount}/${targets.length} récupérées.`);
     this.logger.debug(`[DescriptionEnricher] Bilan final : ${successCount} réussies | ${notFoundCount} sans description trouvée | ${blockedCount} bloquées (403/429) | ${httpErrorCount} autres erreurs HTTP/fetch | arrêt préventif : ${this.shouldStopAll ? 'OUI' : 'non'}.`);
-    // Résumé structuré (compteurs explicites : enrichies vs en attente).
-    const pendingCount = Math.max(0, targets.length - successCount - notFoundCount - blockedCount - httpErrorCount);
-    this.logger.info(`[METRICS] Descriptions : ${successCount} enrichies | ${notFoundCount} absentes | ${blockedCount} bloquées | ${httpErrorCount} erreurs HTTP | ${pendingCount} non traitées (${targets.length} cibles).`);
-    return {
-      successCount,
-      notFoundCount,
-      blockedCount,
-      httpErrorCount,
-      pendingCount,
-      targetsCount: targets.length,
-      stopReason,
-      retryAfterMs,
-      partial: this.shouldStopAll || stopReason != null || this.cancelled,
-    };
     } finally {
       process.removeListener('SIGINT', this._onSigint);
       // Garanti la fermeture du navigateur/contexte/page même en cas d'erreur
@@ -985,9 +941,9 @@ async function main() {
   // La concurrence est le nombre de workers persistants qui traitent les annonces
   // en parallèle (queue dynamique : dès qu'un worker termine, il prend la suivante).
   const SPEED_PRESETS = {
-    moyen:          { concurrency: 8,  minDelayMs: 1500, maxDelayMs: 4000, mode: 'parallèle' },
-    rapide:         { concurrency: 10, minDelayMs: 1000, maxDelayMs: 3000, mode: 'parallèle' },
-    'ultra-rapide': { concurrency: 12, minDelayMs: 700,  maxDelayMs: 2500, mode: 'parallèle' },
+    moyen:          { concurrency: 10, minDelayMs: 500,  maxDelayMs: 1000, mode: 'parallèle' },
+    rapide:         { concurrency: 15, minDelayMs: 200,  maxDelayMs: 600,  mode: 'parallèle' },
+    'ultra-rapide': { concurrency: 25, minDelayMs: 50,   maxDelayMs: 300,  mode: 'parallèle' },
   };
   const preset = SPEED_PRESETS[opts.speed] || SPEED_PRESETS.moyen;
   opts.concurrency = preset.concurrency;
@@ -1098,17 +1054,7 @@ async function main() {
   if (!opts.noDesc) {
     logger.debug(`[main] Lancement de l'enrichissement des descriptions...`);
     const enricher = new DescriptionEnricher(opts, logger);
-    const enrichResult = await enricher.enrichAll(ads, writeOutputs);
-
-    // Arrêt sur blocage d'accès : on sort en code dédié (3=403 refus, 4=429
-    // limitation) APRÈS avoir écrit les résultats partiels. Les annonces déjà
-    // extraites restent sur disque ; aucune reprise automatique n'est tentée.
-    if (enrichResult && enrichResult.stopReason) {
-      const refused = enrichResult.stopReason === 'HTTP_403';
-      logger.warn(`[main] Enrichissement interrompu (${enrichResult.stopReason}) — ${enrichResult.successCount} description(s) récupérée(s), ${enrichResult.blockedCount} blocage(s). Résultats partiels conservés.`);
-      process.exitCode = refused ? 3 : 4;
-      return;
-    }
+    await enricher.enrichAll(ads, writeOutputs);
   } else {
     logger.debug(`[main] Enrichissement des descriptions ignoré (option --no-desc).`);
   }
