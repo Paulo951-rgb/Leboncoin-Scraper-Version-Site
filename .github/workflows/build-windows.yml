@@ -49,6 +49,9 @@ jobs:
       - name: Install dependencies (reproductible)
         run: npm ci
 
+      - name: Run regression tests
+        run: npm test
+
       - name: Prepare embedded Windows Chromium
         run: npm run browsers:win
 

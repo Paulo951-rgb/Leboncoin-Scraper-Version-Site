@@ -2751,6 +2751,128 @@ console.log('\n[34] Observabilité (niveau de log, export)');
 
 console.log('\n[34] OK');
 
+// --- 35. Intégration pipeline : fixture HAR → annonces.json ---
+// Exécute le VRAI pipeline forké (--no-desc, aucun réseau) sur un HAR synthétique
+// et vérifie la chaîne complète : HAR → JSON → normalisation → déduplication → export.
+console.log('\n[35] Intégration pipeline (fixture HAR → annonces.json)');
+{
+  const os = require('os');
+  const { execFileSync } = require('child_process');
+
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-pipeline-'));
+  const outDir = path.join(tmp, 'results');
+  fs.mkdirSync(outDir, { recursive: true });
+
+  const rawAd = (id, subject, city) => ({
+    list_id: id,
+    subject,
+    body: `Description de ${subject}`,
+    price: [ { value: 129.99 } ],
+    location: { city, zipcode: '69001' },
+    owner: { name: 'Jean', type: 'private', user_id: `u${id}` },
+    has_option: { shipping: true },
+    images: { urls: [`https://img.leboncoin.fr/${id}.jpg`] },
+    favorites_count: 7,
+    index_date: '2024-01-01T10:00:00Z',
+  });
+
+  // Deux annonces distinctes + une 3e identique à la 1re (doit être fusionnée).
+  const payload = {
+    data: {
+      ads: [ rawAd('111', 'Vélo de course', 'Lyon'), rawAd('222', 'Guitare', 'Paris') ],
+      other: { list: [ rawAd('111', 'Vélo de course', 'Lyon') ] },
+    },
+  };
+
+  const harPath = path.join(tmp, 'capture.har');
+  fs.writeFileSync(harPath, JSON.stringify({
+    log: {
+      version: '1.2',
+      creator: { name: 'test', version: '1' },
+      entries: [
+        {
+          startedDateTime: new Date().toISOString(),
+          request: { method: 'GET', url: 'https://www.leboncoin.fr/recherche?text=velo' },
+          response: { status: 200, content: { mimeType: 'application/json', text: JSON.stringify(payload) } },
+        },
+        // Entrée non-JSON (HTML) : doit être ignorée sans casser le pipeline.
+        {
+          request: { method: 'GET', url: 'https://www.leboncoin.fr/' },
+          response: { status: 200, content: { mimeType: 'text/html', text: '<html>page</html>' } },
+        },
+      ],
+    },
+  }), 'utf8');
+
+  let ranOk = true;
+  let stdout = '';
+  try {
+    stdout = execFileSync(process.execPath, [
+      path.join(base, 'services/scraping/leboncoin-pipeline.js'),
+      harPath, '--out', outDir, '--no-desc', '--fresh',
+    ], { encoding: 'utf8', timeout: 60000 });
+  } catch (err) {
+    ranOk = false;
+    stdout = (err.stdout || '') + (err.stderr || '');
+  }
+  assert(ranOk, 'pipeline: exécution réussie sur HAR synthétique (exit 0)');
+
+  const annoncesPath = path.join(outDir, 'annonces.json');
+  assert(fs.existsSync(annoncesPath), 'pipeline: annonces.json généré');
+  const ads = JSON.parse(fs.readFileSync(annoncesPath, 'utf8'));
+  assert(Array.isArray(ads) && ads.length === 2,
+    `pipeline: 2 annonces uniques (dédup 3→2), obtenu ${Array.isArray(ads) ? ads.length : '?'}`);
+  const velo = ads.find((a) => a.id === '111');
+  assert(velo && velo.title === 'Vélo de course' && velo.ville === 'Lyon' && velo.codePostal === '69001',
+    'pipeline: champs normalisés + traduits pour export (title, ville, codePostal)');
+  assert(typeof velo.prix === 'number' && velo.prix === 129.99,
+    'pipeline: prix extrait comme NOMBRE (129.99)');
+  assert(velo.deliveryType === 'livraison',
+    `pipeline: deliveryType calculé (livraison), obtenu ${velo && velo.deliveryType}`);
+  assert(velo.photosCount === 1,
+    'pipeline: photos comptées (photosCount)');
+  assert(!('raw' in velo) && !('extractionErrors' in velo) && !('livraison' in velo) && !('mainPropre' in velo),
+    'pipeline: champs internes (raw, extractionErrors, livraison, mainPropre) retirés du JSON');
+
+  // report.json structuré (Thème 4) avec journal réseau.
+  const reportPath = path.join(outDir, 'report.json');
+  assert(fs.existsSync(reportPath), 'pipeline: report.json généré');
+  const report = JSON.parse(fs.readFileSync(reportPath, 'utf8'));
+  assert(report.schemaVersion === 1 && report.exitCode === 0 && report.counts.ads === 2,
+    'pipeline: report.json structuré (schemaVersion, exitCode, counts.ads)');
+  assert(report.journal && typeof report.journal.detailRequests === 'number',
+    'pipeline: report.json embarque le journal réseau');
+
+  // Les codes d'erreur PARSE_NO_ADS ne doivent PAS apparaître (HAR exploitable).
+  assert(!/PARSE_NO_ADS/.test(stdout), 'pipeline: aucune erreur PARSE_NO_ADS sur HAR valide');
+
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+// 35.b Pipeline sur HAR vide → exit code 2 (aucune donnée exploitable), PAS 0.
+{
+  const os = require('os');
+  const { execFileSync } = require('child_process');
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'lbc-pipeline-empty-'));
+  const outDir = path.join(tmp, 'results');
+  fs.mkdirSync(outDir, { recursive: true });
+  const harPath = path.join(tmp, 'empty.har');
+  fs.writeFileSync(harPath, JSON.stringify({ log: { version: '1.2', entries: [] } }), 'utf8');
+  let code = 0;
+  try {
+    execFileSync(process.execPath, [
+      path.join(base, 'services/scraping/leboncoin-pipeline.js'),
+      harPath, '--out', outDir, '--no-desc', '--fresh',
+    ], { encoding: 'utf8', timeout: 60000 });
+  } catch (err) {
+    code = err.status;
+  }
+  assert(code === 2, `pipeline: HAR vide → exit code 2 (aucune donnée exploitable), obtenu ${code}`);
+  fs.rmSync(tmp, { recursive: true, force: true });
+}
+
+console.log('\n[35] OK');
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }
