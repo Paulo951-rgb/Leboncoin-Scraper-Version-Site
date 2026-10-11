@@ -182,7 +182,7 @@ function setupIpcHandlers(getMainWindow) {
       // (enrichissement) et garder une empreinte cohérente (mêmes cookies + UA).
       const captureUserAgent = activeCapturer.getUserAgent();
 
-      const captureResult = await activeCapturer.capture({
+      await activeCapturer.capture({
         searchUrl,
         maxPages: Math.min(500, Math.max(1, parseInt(pages, 10) || 1)),
         outputHarPath: harPath,
@@ -192,37 +192,12 @@ function setupIpcHandlers(getMainWindow) {
 
       activeCapturer = null;
 
-      // If the user requested stop during HAR capture ...
+      // Si l'utilisateur a demandé l'arrêt pendant la capture HAR, on NE lance
+      // PAS le pipeline d'enrichissement (coûteux) et on remonte un état
+      // « annulé » distinct — sinon un clic « Arrêter » aboutissait à un
+      // message « Scraping terminé avec succès ! » trompeur.
       if (activeCancel && activeCancel.cancelled) {
         throw Object.assign(new Error('Scraping annulé par l\'utilisateur.'), { _cancelled: true });
-      }
-
-      // ACCÈS NON CONFIRMÉ : le pré-check/vérification n'a pas pu prouver l'accès
-      // (HTTP 403/429 ou session non validée). On NE lance PAS le pipeline : le
-      // HAR n'a rien d'exploitable et le présenter comme un succès serait faux.
-      if (captureResult && captureResult.blocked) {
-        const code = captureResult.blockedCode || 'ACCESS_UNVERIFIED';
-        const http = captureResult.httpStatus != null ? ` (HTTP ${captureResult.httpStatus})` : '';
-        const isRefused = code === 'HTTP_403' || code === 'HTTP_ACCESS_REFUSED';
-        const isRateLimited = code === 'HTTP_429' || code === 'HTTP_RATE_LIMITED';
-        if (isRefused) {
-          sendLog({ level: 'error', message: `⛔ [HTTP_ACCESS_REFUSED] Accès refusé par le serveur${http}. Aucune donnée récupérée.` });
-        } else if (isRateLimited) {
-          const wait = captureResult.retryAfterMs ? ` (Retry-After ~${Math.round(captureResult.retryAfterMs / 1000)}s)` : '';
-          sendLog({ level: 'error', message: `⏳ [HTTP_RATE_LIMITED] Requête limitée${http}${wait}. Reprise non autorisée pour l'instant.` });
-        } else {
-          sendLog({ level: 'error', message: `[ACCESS_UNVERIFIED] Session non validée${http}. Opération interrompue — aucune donnée exploitable récupérée.` });
-        }
-        sendSessionSummary();
-        sendStatus({
-          state: isRateLimited ? 'rate_limited' : isRefused ? 'refused' : 'error',
-          message: isRateLimited
-            ? 'Requête limitée (HTTP 429). Aucune donnée récupérée.'
-            : isRefused
-              ? 'Accès refusé par le serveur (HTTP 403). Aucune donnée récupérée.'
-              : 'Session non validée. Opération interrompue ; aucune donnée exploitable récupérée.',
-        });
-        return;
       }
 
       sendStatus({ state: 'processing', message: 'Extraction et enrichissement des annonces...' });
