@@ -449,11 +449,21 @@ function mergeKeepingNonNull(existing, incoming) {
   const existingKeys = existing.raw && typeof existing.raw === 'object' ? Object.keys(existing.raw).length : 0;
   const incomingKeys = incoming.raw && typeof incoming.raw === 'object' ? Object.keys(incoming.raw).length : 0;
   merged.raw = incomingKeys > existingKeys ? incoming.raw : existing.raw;
+
+  // deliveryType est DÉRIVÉ de (livraison, mainPropre). Après fusion, les deux
+  // booléens peuvent provenir de deux occurrences différentes (ex. livraison
+  // d'une liste + main propre d'une page de détail) : recalculer l'unifié évite
+  // un deliveryType périmé (ex. « livraison » alors que les_deux est vrai).
+  // On ne touche pas à deliveryType si aucun des deux booléens n'est présent
+  // (annonce sans info de transaction → on préserve l'existant).
+  if (merged.livraison != null || merged.mainPropre != null) {
+    merged.deliveryType = adFields.computeDeliveryType(merged.livraison, merged.mainPropre);
+  }
   return merged;
 }
 
 function parseHtmlDescription(html, adId) {
-  if (!html) return { description: null, livraison: null, mainPropre: null, note: null, etat: null };
+  if (!html) return { description: null, livraison: null, mainPropre: null, note: null, etat: null, nombreAvis: null, urlProfil: null, ancienneteJours: null, vendeurNom: null, vendeurType: null, vendeurId: null };
   const match = html.match(/<script\s+id="__NEXT_DATA__"\s+type="application\/json">\s*([\s\S]*?)\s*<\/script>/i);
   if (match && match[1]) {
     try {
@@ -468,16 +478,51 @@ function parseHtmlDescription(html, adId) {
       const seller = target ? adFields.extractSeller(target) : null;
       const etat = target ? adFields.extractCondition(target) : null;
 
+      // La page de détail expose des données vendeur plus riches que la liste
+      // de recherche (note, nombre d'avis, ancienneté du compte, URL du profil).
+      // On les remonte TOUTES : auparavant seule `note` était extraite, donc
+      // nombreAvis / vendeurUrlProfil / vendeurAncienneteJours restaient null
+      // même quand la page de détail les contenait.
       return {
         description: descriptionText ? cleanText(descriptionText) : null,
         livraison: transaction ? transaction.livraison : null,
         mainPropre: transaction ? transaction.mainPropre : null,
         note: seller ? seller.note : null,
+        nombreAvis: seller ? seller.nombreAvis : null,
+        urlProfil: seller ? seller.urlProfil : null,
+        ancienneteJours: seller ? seller.ancienneteJours : null,
+        vendeurNom: seller ? seller.nom : null,
+        vendeurType: seller ? seller.type : null,
+        vendeurId: seller ? seller.id : null,
         etat,
       };
     } catch { /* Ignorer */ }
   }
-  return { description: null, livraison: null, mainPropre: null, note: null, etat: null };
+  return { description: null, livraison: null, mainPropre: null, note: null, etat: null, nombreAvis: null, urlProfil: null, ancienneteJours: null, vendeurNom: null, vendeurType: null, vendeurId: null };
+}
+
+// Applique les champs extraits d'une page de détail à une annonce SANS écraser
+// une valeur déjà renseignée (non-nulle) par une valeur absente. Recalcule
+// `deliveryType` dès qu'un des deux booléens de transaction a été touché.
+// Fonction PURE (mutation de `ad` uniquement) → testable sans navigateur.
+// Renvoie true si au moins un champ a été complété.
+function applyDetailFields(ad, parsed) {
+  let enriched = false;
+  const fill = (key, val) => { if (val != null && ad[key] == null) { ad[key] = val; enriched = true; } };
+  fill('livraison', parsed.livraison);
+  fill('mainPropre', parsed.mainPropre);
+  fill('vendeurNote', parsed.note);
+  fill('nombreAvis', parsed.nombreAvis);
+  fill('vendeurUrlProfil', parsed.urlProfil);
+  fill('vendeurAncienneteJours', parsed.ancienneteJours);
+  fill('vendeurNom', parsed.vendeurNom);
+  fill('vendeurType', parsed.vendeurType);
+  fill('vendeurId', parsed.vendeurId);
+  if (parsed.etat && !ad.etat) { ad.etat = parsed.etat; enriched = true; }
+  if (parsed.livraison != null || parsed.mainPropre != null) {
+    ad.deliveryType = adFields.computeDeliveryType(ad.livraison, ad.mainPropre);
+  }
+  return enriched;
 }
 
 function mergeDuplicates(ads, logger) {
@@ -636,7 +681,17 @@ class DescriptionEnricher {
   }
 
   async enrichAll(ads, writeOutputs) {
-    const targets = ads.filter((a) => a.url && !a.description);
+    // Cibles de l'enrichissement : toute annonce dont on peut améliorer les
+    // données via sa page de détail. Auparavant la cible était limitée à
+    // `a.url && !a.description` : dès que la liste de recherche fournissait une
+    // description, l'enrichissement était SAUTÉ pour cette annonce → les données
+    // présentes uniquement sur la page de détail (note vendeur, nombre d'avis,
+    // ancienneté du compte, URL du profil, état, mode de remise) restaient null.
+    // On cible donc aussi les annonces dont des champs de détail sont manquants.
+    const needsDetail = (a) => a.vendeurNote == null || a.nombreAvis == null
+      || a.vendeurUrlProfil == null || a.vendeurAncienneteJours == null
+      || a.etat == null || a.livraison == null || a.mainPropre == null;
+    const targets = ads.filter((a) => a.url && (!a.description || needsDetail(a)));
     const noUrlCount = ads.filter((a) => !a.url).length;
     const alreadyHasDesc = ads.filter((a) => a.description).length;
     if (targets.length === 0) {
@@ -734,14 +789,9 @@ class DescriptionEnricher {
 
         if (res && res.html) {
           const parsed = this.parseHtmlDescription(res.html, ad.id);
-          // Enrichissement des champs extraits de la page de détail.
-          let enriched = false;
-          if (parsed.livraison != null && ad.livraison == null) { ad.livraison = parsed.livraison; enriched = true; }
-          if (parsed.mainPropre != null && ad.mainPropre == null) { ad.mainPropre = parsed.mainPropre; enriched = true; }
-          // Recalcule deliveryType si livraison ou mainPropre ont été enrichis.
-          if (enriched) { ad.deliveryType = adFields.computeDeliveryType(ad.livraison, ad.mainPropre); }
-          if (parsed.note != null && ad.vendeurNote == null) { ad.vendeurNote = parsed.note; enriched = true; }
-          if (parsed.etat && !ad.etat) { ad.etat = parsed.etat; enriched = true; }
+          // Enrichissement des champs extraits de la page de détail, sans jamais
+          // écraser une valeur déjà renseignée (voir applyDetailFields).
+          const enriched = applyDetailFields(ad, parsed);
 
           if (parsed.description) {
             const text = String(parsed.description);
@@ -959,7 +1009,7 @@ function writeOutputsFactory(outDir, opts) {
   };
 }
 
-module.exports = { detectStructureChanges, normalizeAd, looksLikeAd, parseHtmlDescription, findAdsIterative, mergeKeepingNonNull };
+module.exports = { detectStructureChanges, normalizeAd, looksLikeAd, parseHtmlDescription, findAdsIterative, mergeKeepingNonNull, applyDetailFields };
 
 async function main() {
   let opts;
