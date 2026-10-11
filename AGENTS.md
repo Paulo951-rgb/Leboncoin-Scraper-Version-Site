@@ -376,6 +376,25 @@ Sans Wine, `-c.win.signAndEditExecutable=false` permet de produire `dist/win-unp
   stats/sessionSelect → sinon données fantômes dans l'UI.
 - **compareSet stale** : les IDs d'annonces supprimées doivent être nettoyés du
   compareSet au changement de cache.
+- **`describeError` non importé (pipeline)** : `leboncoin-pipeline.js` utilisait
+  `describeError` au recyclage de contexte (`createStealthContext` échoue) sans
+  l'importer → `ReferenceError` masquait l'erreur réelle et perdait le log de
+  diagnostic. Import depuis `utils/diagnostics` obligatoire.
+- **`window.prompt()` (Electron)** : NON supporté par Electron → le bouton
+  « Sauvegarder comme Preset » était totalement inopérant. Remplacé par la modale
+  `#presetModal`. Ne pas réintroduire `prompt()` dans le renderer.
+- **`loadPreset` et spread** : `applySearchConfig({ searchUrl: p.searchUrl, ...p })`
+  laissait `p.url` écraser `searchUrl` (spread APRÈS les clés explicites) → URL du
+  preset non chargée. Toujours mettre le spread AVANT les clés explicites.
+- **`escapePath` ordre `&`/`"`** : échapper `&` APRÈS avoir généré `&quot;`
+  double-encode (`&amp;quot;`). `&` doit être remplacé en PREMIER.
+- **`--no-seller-data` en profil Maximum** : `filterAdByFields(ad, null, …)`
+  renvoyait l'objet tel quel (early-return), donc l'exclusion vendeur était
+  ignorée et les données vendeur fuyaient dans l'export Maximum. L'exclusion doit
+  s'appliquer aussi quand `fields` est null.
+- **Logs dev** : `logger._getLogDir()` écrivait dans `Documents` même en dev ;
+  doit rester dans `./output/logs` (cohérent avec jobs/secrets), Documents
+  uniquement en version packagée.
 
 ## Code mort retiré
 - `services/ai/` (adAnalyzer, marketValueAnalyzer, promptGenerator, promptTemplates,
