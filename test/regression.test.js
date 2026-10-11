@@ -3671,6 +3671,46 @@ console.log('\n[39] Bugs corrigés (fuite vendeur, fusion, widget, rétention HA
     try { require('../src/main/services/scraping/leboncoin-pipeline'); } catch { threw = true; }
     assert(!threw, 'pipeline: require() en bibliothèque ne lance pas la CLI');
   }
+
+  // 39.7 buildAdHistory : tri chronologique fiable (date FR ≠ ordre lexical).
+  {
+    const { buildAdHistory } = require('../src/main/services/jobs/jobHistory');
+    const jobs = [
+      { id: 'job-2026-02-01T10-00-00-000Z', date: '01/02/2026 à 10:00', ads: [{ id: '1', prix: 80, title: 'A', url: 'u' }] },
+      { id: 'job-2026-01-12T10-00-00-000Z', date: '12/01/2026 à 10:00', ads: [{ id: '1', prix: 100, title: 'A', url: 'u' }] },
+    ];
+    const h = buildAdHistory(jobs)[0];
+    assert(h.premiereDecouverte === '12/01/2026 à 10:00', 'buildAdHistory: 1re découverte = janvier (tri ISO, pas lexical FR)');
+    assert(h.derniereMaj === '01/02/2026 à 10:00', 'buildAdHistory: dernière maj = février');
+    assert(h.prix && h.prix.direction === 'baisse' && h.prix.initial === 100 && h.prix.actuel === 80,
+      'buildAdHistory: baisse 100→80 détectée (sens chronologique correct)');
+  }
+
+  // 39.8 Cohérence deliveryType : adStats et statsModule alignés sur
+  // computeDeliveryType pour le cas false + null.
+  {
+    const { computeDeliveryType } = require('../src/main/services/scraping/adFields');
+    const cases = [[true, true], [true, false], [true, null], [false, true], [null, true], [false, false], [false, null], [null, false], [null, null]];
+    let mismatches = 0;
+    for (const [l, m] of cases) {
+      const canon = computeDeliveryType(l, m);
+      let statsFallback;
+      if (l === true && m === true) statsFallback = 'les_deux';
+      else if (l === true) statsFallback = 'livraison';
+      else if (m === true) statsFallback = 'main_propre';
+      else if (l === false || m === false) statsFallback = 'aucun';
+      else statsFallback = 'inconnu';
+      if (canon !== statsFallback) mismatches++;
+    }
+    assert(mismatches === 0, 'deliveryType: repli (false+null→aucun) aligné sur computeDeliveryType pour les 9 combinaisons');
+    // Source-level : les 3 replis doivent utiliser la condition `||` (false||false→aucun).
+    const adStatsSrc = fs.readFileSync(path.join(__dirname, '..', 'src/main/services/analysis/adStats.js'), 'utf8');
+    const statsSrc = fs.readFileSync(path.join(__dirname, '..', 'src/renderer/statsModule.js'), 'utf8');
+    assert(/livraison === false \|\| mainPropre === false/.test(adStatsSrc),
+      'adStats: repli deliveryType utilise `||` (false+null→aucun)');
+    assert(/livraison === false \|\| mainPropre === false/.test(statsSrc),
+      'statsModule: repli deliveryType utilise `||` (false+null→aucun)');
+  }
 }
 
 console.log('\n[39] OK');

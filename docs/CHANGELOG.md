@@ -35,11 +35,20 @@ décrivent des modifications vérifiées (code + tests).
   `main()` au niveau module → un simple `require()` (tests, usage bibliothèque)
   lançait la CLI sans `.har` et sortait en code 1. `main()` est désormais gardé
   par `require.main === module` (fork/CLI inchangés).
+- **Historique des annonces inversé** : `buildAdHistory` (`jobHistory.js`) triait
+  les occurrences par comparaison **lexicographique** de la date affichée FR
+  (`jj/mm/aaaa`). Résultat : `01/02/2026` classé AVANT `12/01/2026` → la
+  « première découverte » et la « dernière maj » étaient inversées et les
+  variations de prix/likes rapportées à l'envers (une baisse affichée comme une
+  hausse). Tri désormais basé sur l'horodatage ISO de l'id de job (repli FR).
+- **`deliveryType` incohérent (renderer)** : `statsModule.renderStatsView`
+  utilisait le même repli erroné que `AdStats` (false+null → inconnu). Les deux
+  replis sont alignés sur `computeDeliveryType` (false+null → aucun).
 
 ### Tests
 
-- Nouvelle section `[39]` (12 assertions) ciblant chaque bug corrigé.
-- `npm test` → 1277 réussis / 0 échoués.
+- Nouvelle section `[39]` (20 assertions) ciblant chaque bug corrigé.
+- `npm test` → 1283 réussis / 0 échoués.
 
 ## [Non publié] — Feuille de route : tests, UX, sécurité, perf — 2026-10-11
 

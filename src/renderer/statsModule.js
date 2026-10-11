@@ -144,10 +144,12 @@ function renderStatsView() {
     if (!dt) {
       const livraison = a.livraison ?? a.shipping;
       const mainPropre = a.mainPropre ?? a.handDelivery;
+      // Doit reproduire computeDeliveryType : false + null → aucun (pas inconnu),
+      // sinon l'onglet Stats diverge de l'explorateur et de la fiche annonce.
       if (livraison === true && mainPropre === true) dt = 'les_deux';
       else if (livraison === true) dt = 'livraison';
       else if (mainPropre === true) dt = 'main_propre';
-      else if (livraison === false && mainPropre === false) dt = 'aucun';
+      else if (livraison === false || mainPropre === false) dt = 'aucun';
       else dt = 'inconnu';
     }
     if (dt === 'livraison') livraisonCount++;

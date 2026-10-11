@@ -36,8 +36,24 @@ function buildAdHistory(allJobs) {
 
   const result = [];
   for (const [id, occurrences] of byAd.entries()) {
-    // Tri chronologique (jobs triés par id décroissant → on remet en croissant)
-    occurrences.sort((a, b) => String(a.jobDate).localeCompare(String(b.jobDate)));
+    // Tri chronologique. `jobDate` est une date AFFICHÉE au format FR
+    // (jj/mm/aaaa) : un tri lexicographique est FAUX (01/02/2026 < 12/01/2026
+    // alors que février est postérieur à janvier). On dérive donc un instant
+    // fiable depuis l'horodatage ISO présent dans l'id du job (job-<ISO>), avec
+    // repli sur la date FR parsée, puis sur la chaîne brute.
+    const _timeOf = (o) => {
+      const m = String(o.jobId || '').match(/^job-(\d{4})-(\d{2})-(\d{2})T(\d{2})-(\d{2})-(\d{2})/);
+      if (m) return Date.parse(`${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`);
+      const fr = String(o.jobDate || '').match(/^(\d{2})\/(\d{2})\/(\d{4})(?: à (\d{2}):(\d{2}))?/);
+      if (fr) return Date.parse(`${fr[3]}-${fr[2]}-${fr[1]}T${fr[4] || '00'}:${fr[5] || '00'}:00Z`);
+      return NaN;
+    };
+    occurrences.sort((a, b) => {
+      const ta = _timeOf(a);
+      const tb = _timeOf(b);
+      if (Number.isFinite(ta) && Number.isFinite(tb) && ta !== tb) return ta - tb;
+      return String(a.jobDate).localeCompare(String(b.jobDate));
+    });
     const first = occurrences[0];
     const last = occurrences[occurrences.length - 1];
 
