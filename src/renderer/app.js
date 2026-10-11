@@ -97,6 +97,7 @@ document.addEventListener('keydown', (e) => {
     adDetailModal.classList.add('hidden');
     compareModal.classList.add('hidden');
     settingsModal.classList.add('hidden');
+    document.getElementById('presetModal')?.classList.add('hidden');
     // Modales d'aide (FAQ / Help / Feedback)
     document.getElementById('faqModal')?.classList.add('hidden');
     document.getElementById('helpModal')?.classList.add('hidden');

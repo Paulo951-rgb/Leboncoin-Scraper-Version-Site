@@ -2516,6 +2516,68 @@ console.log('\n[31] Audit 403 : compteurs + backoff + Retry-After');
   console.log('\n[31] OK');
 }
 
+// --- 32. Audit global : bugs corrigés (non-régression) ---
+// Couvre des défauts réels découverts lors de l'audit complet :
+//  - describeError non importé dans le pipeline (ReferenceError au recyclage) ;
+//  - escapePath double-encodait '&' (ordre des remplacements) ;
+//  - window.prompt() (non supporté par Electron) cassait « Sauvegarder un Preset » ;
+//  - applySearchConfig : le re-spread de `p` écrasait l'URL du preset ;
+//  - --no-seller-data ignoré en profil Maximum (fields=null) ;
+//  - toReadableBlock jetait sur une annonce null ;
+//  - logs dev écrits dans Documents au lieu de ./output/logs.
+console.log('\n[32] Audit global : correctifs');
+{
+  const read = (rel) => fs.readFileSync(path.join(__dirname, '..', rel), 'utf8');
+  const pipeCode = read('src/main/services/scraping/leboncoin-pipeline.js');
+  const utilsCode = read('src/renderer/utils.js');
+  const scraperCode = read('src/renderer/scraperModule.js');
+  const htmlCode = read('src/renderer/index.html');
+  const loggerCode = read('src/main/utils/logger.js');
+
+  // 32.1 describeError importé dans le pipeline (utilisé au recyclage de contexte).
+  assert(/const\s*\{[^}]*describeError[^}]*\}\s*=\s*require\([^)]*diagnostics/.test(pipeCode),
+    'pipeline: describeError importé depuis diagnostics (plus de ReferenceError)');
+
+  // 32.2 escapePath : '&' échappé AVANT '"'.
+  const ampIdx = utilsCode.indexOf("replace(/&/g, '&amp;')");
+  const quoteIdx = utilsCode.indexOf('replace(/"/g, \'&quot;\')');
+  assert(ampIdx !== -1 && quoteIdx !== -1 && ampIdx < quoteIdx,
+    'utils.js: escapePath échappe & avant " (pas de double-encodage)');
+
+  // 32.3 Plus de window.prompt() (non supporté par Electron).
+  assert(!/[^.\w]prompt\(/.test(scraperCode), 'scraperModule: plus de prompt() (non supporté Electron)');
+  assert(/id="presetModal"/.test(htmlCode) && /id="presetNameInput"/.test(htmlCode),
+    'index.html: modale de nom de preset présente');
+  assert(/presetModal/.test(scraperCode) && /presetConfirmBtn/.test(scraperCode),
+    'scraperModule: enregistrement de preset via modale');
+
+  // 32.4 loadPreset : les clés explicites ne sont plus écrasées par le spread.
+  assert(!/applySearchConfig\(\{\s*searchUrl:[^}]*\.\.\.p\s*\}\)/.test(scraperCode),
+    'scraperModule: loadPreset ne re-spread plus p (URL non écrasée)');
+  assert(/searchUrl:\s*p\.searchUrl\s*\|\|\s*p\.url/.test(scraperCode),
+    'scraperModule: loadPreset résout searchUrl||url correctement');
+
+  // 32.5 --no-seller-data honoré en profil Maximum (fields=null).
+  const exf = require('../src/main/services/exporting/exportFields');
+  const adFull = { id: '1', title: 'T', vendeurNom: 'Bob', vendeurId: '9', vendeurNote: 4, city: 'Lyon' };
+  const maxNoSeller = exf.filterAdByFields(adFull, null, { excludeSellerData: true });
+  assert(!('vendeurNom' in maxNoSeller) && !('vendeurId' in maxNoSeller),
+    'exportFields: excludeSellerData honoré en profil Maximum (fields=null)');
+  assert(maxNoSeller.id === '1' && maxNoSeller.city === 'Lyon',
+    'exportFields: champs non-vendeur conservés en Maximum sans vendeur');
+
+  // 32.6 toReadableBlock ne jette plus sur une annonce null.
+  let threw = false;
+  try { exf.toReadableBlock(null, 0, ['id']); } catch { threw = true; }
+  assert(!threw, 'exportFields: toReadableBlock(null) ne jette pas');
+
+  // 32.7 logs dev → ./output/logs (cohérent avec jobs/secrets), pas Documents.
+  assert(/app\.isPackaged\s*\?\s*path\.join\(app\.getPath\('documents'\)[^)]*\)\s*:\s*null/.test(loggerCode),
+    'logger: dossier de logs dev = ./output/logs (pas Documents)');
+
+  console.log('\n[32] OK');
+}
+
 console.log(`\n=== RÉSULTAT : ${pass} réussis, ${fail} échoués ===`);
 process.exit(fail > 0 ? 1 : 0);
 }

@@ -25,10 +25,14 @@ let _stream = null;
 
 function _getLogDir() {
   if (_logDir) return _logDir;
+  // En version packagée, les logs vont dans le dossier utilisateur (Documents).
+  // En dev, ils vont dans ./output/logs — comme les jobs et les secrets
+  // (constants.js BASE_OUT_DIR, secretStore) — et NON dans Documents, ce qui
+  // éparpillait les artefacts de dev hors du projet.
   try {
     const base = app && app.isPackaged
       ? path.join(app.getPath('documents'), 'Leboncoin Scraper Pro')
-      : (app && app.getPath ? path.join(app.getPath('documents'), 'Leboncoin Scraper Pro') : null);
+      : null;
     _logDir = base ? path.join(base, 'logs') : LOG_DIR_DEV;
   } catch {
     _logDir = LOG_DIR_DEV;
