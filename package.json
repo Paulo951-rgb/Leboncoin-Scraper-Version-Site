@@ -15,6 +15,7 @@
     "browsers": "node tools/prepare-browsers.js",
     "browsers:win": "node tools/prepare-browsers.js --platform=win",
     "icon": "python3 tools/generate-icon.py",
+    "hf:prepare": "node tools/prepare-hf-space.js",
     "prepack": "node tools/prepare-browsers.js",
     "pack": "electron-builder --dir",
     "predist": "node tools/prepare-browsers.js --platform=win",

@@ -133,6 +133,13 @@ chiffrés) sont remplacées par des équivalents Web explicites.
 `/api/health`. Détails complets : **`docs/WEB_DEPLOYMENT.md`** ; audit et plan de
 migration : **`docs/WEB_MIGRATION_AUDIT.md`**.
 
+Autres cibles :
+- **Hugging Face Spaces** : `deploy/huggingface/` + `npm run hf:prepare`
+  (⚠️ Space Docker = plan payant depuis 2026, disque non persistant) —
+  voir `docs/WEB_DEPLOYMENT_HUGGINGFACE.md`.
+- **Oracle Cloud Always Free** : seule offre réellement gratuite et persistante
+  capable de faire tourner Chromium (2 OCPU ARM / 12 Go / 200 Go).
+
 ### Limite CAPTCHA
 
 Le serveur est **headless** : la résolution manuelle d'un CAPTCHA n'est pas
@@ -210,6 +217,7 @@ npm start
 | `npm run browsers` | `node tools/prepare-browsers.js` | Télécharge le Chromium de la plateforme hôte dans `node_modules` |
 | `npm run browsers:win` | `node tools/prepare-browsers.js --platform=win` | Télécharge le Chromium **Windows** (build croisé sur Linux/macOS) |
 | `npm run icon` | `python3 tools/generate-icon.py` | Régénère `build/icon.ico` (nécessite Pillow) |
+| `npm run hf:prepare` | `node tools/prepare-hf-space.js` | Assemble un dépôt prêt pour Hugging Face Spaces (`deploy/huggingface/`)|
 | `npm run pack` | `electron-builder --dir` | Packaging local (non distribuable) — `prepack` prépare le Chromium |
 | `npm run dist` | `electron-builder --win` | Génère l'installeur + la version portable Windows — `predist` prépare le Chromium Windows |
 | `npm run build` | `electron-builder --win` | Alias de `dist` |
