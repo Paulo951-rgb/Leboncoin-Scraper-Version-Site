@@ -18,6 +18,66 @@ Le scraping fonctionne **100% sans IA**. Il n'y a aucun système d'IA dans le pr
 
 `adFields.js` est un module de **scraping pur** : aucun appel IA, aucun prompt, aucun LLM, aucun fetch externe.
 
+## Deux applications, un seul moteur (Electron + Web)
+
+Le dépôt héberge **deux applications indépendantes** partageant le MÊME moteur
+de scraping (aucune simulation) :
+
+| Version | Entrée | Exécution |
+|---|---|---|
+| Bureau | `src/main/main.js` (`npm start`) | Electron local |
+| Web | `src/server/index.js` (`npm run start:web`) | Serveur Node.js (Render) |
+
+**Règle** : ne jamais introduire d'`electron` dans un module utilisé par le
+serveur. Modules partagés SANS Electron : `harCapturer`, `pipelineRunner`,
+`leboncoin-pipeline`, `adFields`, `errorCodes`, `exporting/*`, `adStats`,
+`jobHistory`, `urlSecurity`, `config/scraping.js`.
+
+Découplages réalisés (comportement Electron inchangé) :
+- `config/constants.js` : `electron` requis *lazy* (`_electronApp()`) ;
+  `resolveBaseOutDir()` honore `process.env.LBC_BASE_OUT_DIR` (mode serveur).
+- `utils/logger.js` : `electron` *lazy* + dossier de logs via `LBC_BASE_OUT_DIR`.
+- `harCapturer.js` : `globalSessionPath` **injectable** (option) ; option
+  `allowVisibleCaptcha` (défaut `true` ; serveur = `false` → CAPTCHA = état
+  `action_required`, jamais de fausse réussite).
+- `ipcHandlers.js` : passe `globalSessionPath` à `HarCapturer`.
+
+## Backend Web (src/server/) — contrat & pièges
+
+- **États de tâche** : `queued`, `running`, `completed`, `partial`, `failed`,
+  `cancelled`, `action_required`. Progression **jamais 100 %** avant la fin
+  effective (échec/annulation conservent la dernière valeur réelle).
+- **SSE** : `GET /api/jobs/:id/events` (events `log` + `status`), repli polling
+  (`GET /api/jobs/:id`, `/logs`).
+- **Isolation** : jobs/sessions/résultats sous `<userId>/` ; toute ressource
+  filtrée par `user_id` en base → un `id` seul renvoie **404**.
+- **Anti-SSRF** : `security.validateJobConfig` réutilise `urlSecurity`
+  (allowlist Leboncoin stricte + refus IP privées/localhost).
+- **Exports** : `GET /api/jobs/:id/export/json|txt` (Content-Type +
+  Content-Disposition). Si données vendeur désactivées, le JSON est **régénéré
+  filtré** (défense en profondeur — ne pas se fier au fichier disque).
+- **Champs internes** (`raw`, `extractionErrors`, `livraison`, `mainPropre`) :
+  TOUJOURS retirés des réponses API (`resultsService.stripInternal`).
+- **Persistance** : SQLite (`better-sqlite3`, WAL) sous `LBC_BASE_OUT_DIR` ;
+  le dépôt n'est PAS un stockage durable. Maintenance périodique (rétention
+  jobs/HAR, purge sessions).
+- **Arrêt propre** : `SIGTERM`/`SIGINT` → `manager.shutdown()` (annule les
+  tâches, ferme navigateurs + fork), puis fermeture HTTP + base.
+- **Fabriques injectables** : `JobManager.captureFactory`/`runnerFactory`
+  permettent un moteur factice dans les tests ; en prod ce sont les vrais
+  `HarCapturer`/`PipelineRunner`.
+
+## Frontend Web
+
+- `src/renderer/api.js` : expose `window.api` avec les MÊMES méthodes que le
+  preload Electron, via REST/SSE. Ne s'installe PAS si le preload est présent
+  (`window.api.__isElectron`). Les modules renderer existants sont réutilisés
+  sans réécriture métier.
+- `src/renderer/authModule.js` : écran de connexion + reprise de tâche (Web).
+- Différences Web : téléchargement des exports (au lieu d'ouverture locale),
+  `openFile/openFolder` neutralisés, widget flottant masqué, responsive tactile.
+- État renderer `action_required` ajouté à `scraperModule` (bandeau CAPTCHA).
+
 ## Champ `deliveryType` (unifié)
 
 L'ancienne paire de champs `livraison` / `mainPropre` a été remplacée par un **champ unique** `deliveryType` calculé par `computeDeliveryType(livraison, mainPropre)` dans `adFields.js` :

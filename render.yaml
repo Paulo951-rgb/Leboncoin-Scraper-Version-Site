@@ -1,0 +1,56 @@
+# Blueprint Render — Leboncoin Scraper Pro (version Web)
+#
+# Déploiement en un service Docker unique (Node.js + Playwright/Chromium).
+# Un disque persistant est monté sur /data : il conserve la base SQLite, les
+# résultats JSON/TXT, les logs et les sessions entre redéploiements.
+#
+# IMPORTANT (limites Render) :
+#   - Chromium + Playwright nécessitent de la RAM : le plan « starter » (512 Mo)
+#     est insuffisant en pratique pour un scraping stable. Privilégier au moins
+#     le plan « standard » (2 Go) — voir docs/WEB_DEPLOYMENT.md.
+#   - Le disque persistant n'est disponible que sur les plans payants.
+#
+# Après création, définir les variables marquées sync:false dans le dashboard.
+
+services:
+  - type: web
+    name: leboncoin-scraper-web
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: standard          # 2 Go RAM — requis pour Chromium (voir docs)
+    healthCheckPath: /api/health
+    autoDeploy: true
+    envVars:
+      - key: NODE_ENV
+        value: production
+      # NE PAS définir PORT ici : Render injecte lui-même PORT et route le
+      # trafic vers ce port. Le fixer en dur provoquerait une erreur 502.
+      - key: LBC_BASE_OUT_DIR
+        value: /data
+      # Secret de signature des sessions. GÉNÉRER une valeur aléatoire longue
+      # (ex: openssl rand -hex 32) et la saisir dans le dashboard (sync:false).
+      - key: LBC_SESSION_SECRET
+        sync: false
+      # Authentification obligatoire en production.
+      - key: LBC_AUTH_DISABLED
+        value: "0"
+      - key: LBC_ALLOW_SIGNUP
+        value: "1"
+      # Limites de ressources (ajuster selon le plan).
+      - key: LBC_GLOBAL_CONCURRENCY
+        value: "2"
+      - key: LBC_MAX_JOBS_PER_USER
+        value: "2"
+      - key: LBC_MAX_PAGES
+        value: "50"
+      - key: LBC_JOB_TIMEOUT_MS
+        value: "1800000"
+      # Rétention (jours) — évite la croissance illimitée du stockage.
+      - key: LBC_JOB_RETENTION_DAYS
+        value: "30"
+      - key: LBC_HAR_RETENTION_DAYS
+        value: "2"
+    disk:
+      name: lbc-data
+      mountPath: /data
+      sizeGB: 10

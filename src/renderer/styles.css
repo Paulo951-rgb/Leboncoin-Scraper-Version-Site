@@ -1836,6 +1836,53 @@ body.seller-data-hidden .cell-vendeur {
 }
 
 /* -------------------------------------------------------------------------
+ * VERSION WEB — adaptations (connexion, téléchargements, tableaux tactiles)
+ * ------------------------------------------------------------------------- */
+
+/* Écran de connexion : au-dessus de tout, non fermable au clic extérieur. */
+#loginOverlay { align-items: center; }
+#loginOverlay .modal-card { width: 100%; max-width: 420px; }
+
+/* Boutons de téléchargement (remplacent l'ouverture de fichiers en Electron). */
+.file-tag[data-action="downloadExport"] { cursor: pointer; user-select: none; }
+
+/* Sur petits écrans : autorise le défilement horizontal des tableaux larges
+   (explorateur, historique) plutôt que de tasser les colonnes. */
+@media (max-width: 900px) {
+  .table-container,
+  .ads-table-container,
+  .tab-content table {
+    overflow-x: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  .app-container { flex-direction: column; }
+  .sidebar {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    overflow-x: auto;
+  }
+  .sidebar-nav { flex-direction: row; }
+  .nav-item { flex-direction: column; min-width: 64px; }
+  .content, .main-content { width: 100%; }
+  .stat-cards { grid-template-columns: repeat(2, 1fr) !important; }
+}
+
+/* Très petits écrans (téléphones) : une seule colonne de cartes. */
+@media (max-width: 560px) {
+  .stat-cards { grid-template-columns: 1fr !important; }
+  .form-row, .grid-2, .grid-3 { grid-template-columns: 1fr !important; }
+  .modal-card { max-width: 94vw !important; }
+  .charts-grid { grid-template-columns: 1fr !important; }
+}
+
+/* Zones tactiles confortables (>= 44px) pour les boutons d'action. */
+@media (pointer: coarse) {
+  .btn, .nav-item, .file-tag, .preset-chip { min-height: 40px; }
+  .btn-small { min-height: 34px; }
+}
+
+/* -------------------------------------------------------------------------
  * REDUCED MOTION
  * ------------------------------------------------------------------------- */
 @media (prefers-reduced-motion: reduce) {

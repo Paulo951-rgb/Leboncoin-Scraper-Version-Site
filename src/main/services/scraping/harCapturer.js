@@ -5,8 +5,24 @@ const path = require('path');
 const { EventEmitter } = require('events');
 const { chromium } = require('playwright');
 const { sleep } = require('../../utils/helpers');
-const { GLOBAL_SESSION_PATH } = require('../../config/constants');
 const { formatBytes, formatMs, describeError } = require('../../utils/diagnostics');
+
+/**
+ * Résout le chemin de la session globale SANS importer `config/constants`
+ * (qui requiert `electron`). Permet de réutiliser ce moteur dans un serveur
+ * Node.js (Render) en plus du main process Electron.
+ *
+ * Ordre de résolution :
+ *   1. `options.globalSessionPath` (injecté explicitement par l'appelant) ;
+ *   2. `process.env.LBC_GLOBAL_SESSION_PATH` ;
+ *   3. `<LBC_BASE_OUT_DIR|./output>/global-session.json`.
+ * En Electron, ipcHandlers injecte GLOBAL_SESSION_PATH → comportement identique.
+ */
+function resolveGlobalSessionPath() {
+  if (process.env.LBC_GLOBAL_SESSION_PATH) return process.env.LBC_GLOBAL_SESSION_PATH;
+  const base = process.env.LBC_BASE_OUT_DIR || path.join(process.cwd(), 'output');
+  return path.join(base, 'global-session.json');
+}
 
 const { getRandomUserAgent } = require('./userAgents');
 const { ErrorCodes, createError } = require('./errorCodes');
@@ -33,6 +49,15 @@ class HarCapturer extends EventEmitter {
     this.minPageDelayMs = options.minPageDelayMs || 800;
     this.maxPageDelayMs = options.maxPageDelayMs || 1500;
     this.isCancelled = false;
+    // Session globale : injectable (Electron passe GLOBAL_SESSION_PATH, le
+    // serveur Web passe son propre chemin). Évite tout import d'`electron`.
+    this.globalSessionPath = options.globalSessionPath || resolveGlobalSessionPath();
+    // Mode « fenêtre visible pour résolution CAPTCHA ». L'app Electron l'active
+    // (l'utilisateur résout le défi à l'écran). Le serveur Web headless le
+    // désactive : sans écran, ouvrir un Chromium visible échoue. Dans ce cas un
+    // CAPTCHA est rapporté comme « action requise » (arrêt propre) au lieu d'une
+    // tentative vouée à l'échec.
+    this.allowVisibleCaptcha = options.allowVisibleCaptcha !== false;
     // Journal réseau structuré (compteurs objectifs pour report.json) : compte
     // les navigations, pages réussies/échouées et blocages avec leur URL.
     this.journal = options.journal || new NetworkJournal();
@@ -137,14 +162,14 @@ class HarCapturer extends EventEmitter {
 
   // Pré-check Leboncoin : navigue en invisible, et si un CAPTCHA est détecté,
   // bascule dans une fenêtre VISIBLE pour résolution humaine, puis revient en
-  // invisible. La session validée est persistée dans GLOBAL_SESSION_PATH.
+  // invisible. La session validée est persistée dans globalSessionPath.
   async _warmupSession(browser, checkUrl) {
     this.emit('log', { level: 'info', message: '🔍 Pré-check session : navigation invisible vers Leboncoin...' });
-    this.emit('log', { level: 'debug', message: `[warmup] URL de vérification : ${checkUrl} | session existante : ${fs.existsSync(GLOBAL_SESSION_PATH) ? 'OUI (' + formatBytes(fs.statSync(GLOBAL_SESSION_PATH).size) + ')' : 'NON'}` });
+    this.emit('log', { level: 'debug', message: `[warmup] URL de vérification : ${checkUrl} | session existante : ${fs.existsSync(this.globalSessionPath) ? 'OUI (' + formatBytes(fs.statSync(this.globalSessionPath).size) + ')' : 'NON'}` });
 
     const ctxOpts = this._baseContextOptions();
-    if (fs.existsSync(GLOBAL_SESSION_PATH)) {
-      ctxOpts.storageState = GLOBAL_SESSION_PATH;
+    if (fs.existsSync(this.globalSessionPath)) {
+      ctxOpts.storageState = this.globalSessionPath;
       this.emit('log', { level: 'info', message: '🔑 Chargement de la session globale (Master Session)...' });
     }
 
@@ -180,11 +205,11 @@ class HarCapturer extends EventEmitter {
     if (!blocked) {
       // Pas de captcha : on persiste la session fraîche si elle n'existait pas,
       // AVANT de fermer le contexte (storageState sur un contexte fermé échoue).
-      if (!fs.existsSync(GLOBAL_SESSION_PATH)) {
-        await ctx.storageState({ path: GLOBAL_SESSION_PATH }).catch((e) => {
+      if (!fs.existsSync(this.globalSessionPath)) {
+        await ctx.storageState({ path: this.globalSessionPath }).catch((e) => {
           this.emit('log', { level: 'warn', message: `[warmup] Sauvegarde session fraîche impossible : ${e.message}` });
         });
-        this.emit('log', { level: 'debug', message: `[warmup] Session fraîche persistée : ${GLOBAL_SESSION_PATH}` });
+        this.emit('log', { level: 'debug', message: `[warmup] Session fraîche persistée : ${this.globalSessionPath}` });
       }
       await p.close().catch(() => {});
       await ctx.close().catch(() => {});
@@ -199,6 +224,17 @@ class HarCapturer extends EventEmitter {
 
     const captchaDetectedErr = createError(ErrorCodes.CAPTCHA_DETECTED, 'Blocage CAPTCHA détecté — affichage de la fenêtre (résolution humaine requise)');
     this.emit('log', { level: 'warn', message: `⚠️ [${captchaDetectedErr.code}] Blocage CAPTCHA détecté — affichage de la fenêtre (résolution humaine requise).` });
+
+    // Serveur headless : impossible d'ouvrir une fenêtre visible pour résolution
+    // manuelle. On arrête proprement et on signale « action requise » — ne JAMAIS
+    // prétendre que le CAPTCHA est résolu.
+    if (!this.allowVisibleCaptcha) {
+      const actionErr = createError(ErrorCodes.CAPTCHA_UNRESOLVED, 'CAPTCHA détecté : une intervention humaine est requise, mais la résolution manuelle n\'est pas disponible en mode serveur headless.');
+      this.emit('log', { level: 'warn', message: `[warmup] [${actionErr.code}] Résolution manuelle indisponible (mode headless) — arrêt propre, aucune fenêtre ouverte en boucle.` });
+      this.emit('progress', { currentPage: 0, totalPages: 0, percent: 0, status: 'CAPTCHA : intervention humaine requise (indisponible en mode headless)' });
+      return { verified: false, reason: 'captcha_required' };
+    }
+
     this.emit('log', { level: 'info', message: '👤 Une fenêtre va s\'ouvrir. Résolvez le CAPTCHA manuellement — le scraping reprendra automatiquement.' });
     this.emit('progress', { currentPage: 0, totalPages: 0, percent: 0, status: 'CAPTCHA : veuillez résoudre dans la fenêtre ouverte...' });
 
@@ -207,7 +243,7 @@ class HarCapturer extends EventEmitter {
     const visibleBrowser = await chromium.launch(this._launchOptions(false));
     try {
       const vOpts = this._baseContextOptions();
-      if (fs.existsSync(GLOBAL_SESSION_PATH)) vOpts.storageState = GLOBAL_SESSION_PATH;
+      if (fs.existsSync(this.globalSessionPath)) vOpts.storageState = this.globalSessionPath;
       const { ctx: vCtx, p: vPage } = await this._newStealthContext(visibleBrowser, vOpts);
 
       // 🛑 FIX CRITIQUE : suivre le statut HTTP en temps réel via les responses.
@@ -338,8 +374,8 @@ class HarCapturer extends EventEmitter {
       }
 
       // Persiste la session validée pour les jobs suivants (plus de fenêtre visible).
-      await vCtx.storageState({ path: GLOBAL_SESSION_PATH });
-      this.emit('log', { level: 'debug', message: `[warmup] Session validée persistée : ${GLOBAL_SESSION_PATH} (${formatBytes(fs.statSync(GLOBAL_SESSION_PATH).size)})` });
+      await vCtx.storageState({ path: this.globalSessionPath });
+      this.emit('log', { level: 'debug', message: `[warmup] Session validée persistée : ${this.globalSessionPath} (${formatBytes(fs.statSync(this.globalSessionPath).size)})` });
       await vPage.close().catch(() => {});
       await vCtx.close().catch(() => {});
       this.emit('log', { level: 'info', message: '✅ CAPTCHA résolu et session persistée — reprise du scraping invisible.' });
@@ -450,8 +486,8 @@ class HarCapturer extends EventEmitter {
         },
       });
 
-      if (fs.existsSync(GLOBAL_SESSION_PATH)) {
-        contextOptions.storageState = GLOBAL_SESSION_PATH;
+      if (fs.existsSync(this.globalSessionPath)) {
+        contextOptions.storageState = this.globalSessionPath;
         this.emit('log', { level: 'info', message: '🔑 Session validée chargée pour la capture.' });
       } else {
         this.emit('log', { level: 'warn', message: '[capture] Aucune session globale trouvée pour la capture — risque de blocage captcha plus élevé.' });
@@ -497,7 +533,7 @@ class HarCapturer extends EventEmitter {
           // On NE la réécrit PAS ensuite : les pages suivantes peuvent être 403
           // (anti-bot) et empoisonneraient la session avec des cookies de blocage.
           if (typeof httpStatus === 'number' && httpStatus < 400 && !globalSessionSaved) {
-            await context.storageState({ path: GLOBAL_SESSION_PATH }).catch((e) => {
+            await context.storageState({ path: this.globalSessionPath }).catch((e) => {
               this.emit('log', { level: 'warn', message: `[capture] Sauvegarde session globale impossible après page ${pageNum} : ${e.message}` });
             });
             globalSessionSaved = true;
@@ -560,8 +596,8 @@ class HarCapturer extends EventEmitter {
             const retryCtxOpts = this._baseContextOptions({
               recordHar: { path: activeHarPath, mode: 'full', urlFilter: /recherche|api|items/i },
             });
-            if (fs.existsSync(GLOBAL_SESSION_PATH)) {
-              retryCtxOpts.storageState = GLOBAL_SESSION_PATH;
+            if (fs.existsSync(this.globalSessionPath)) {
+              retryCtxOpts.storageState = this.globalSessionPath;
               this.emit('log', { level: 'info', message: '🔑 Session validée chargée pour reprise de capture.' });
             }
             ({ ctx: context, p: page } = await this._newStealthContext(browser, retryCtxOpts));
@@ -635,7 +671,7 @@ class HarCapturer extends EventEmitter {
       await page.waitForLoadState('networkidle', { timeout: 5000 }).catch(() => {});
 
       // Session locale (par-job) : toujours sauvegardée pour le pipeline d'enrichissement.
-      // La session globale (GLOBAL_SESSION_PATH) a déjà été sauvegardée après la 1ère page
+      // La session globale (globalSessionPath) a déjà été sauvegardée après la 1ère page
       // réussie ci-dessus — on ne l'écrase PAS ici pour éviter de la corrompre avec d'éventuels
       // cookies anti-bot accumulés sur les pages suivantes (403).
       await context.storageState({ path: statePath });

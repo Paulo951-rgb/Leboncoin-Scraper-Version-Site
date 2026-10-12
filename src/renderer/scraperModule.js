@@ -531,8 +531,9 @@ window.api.onStatusChange(({ state, message }) => {
   if (message) statusText.textContent = `Statut : ${message}`;
 
   // États terminaux : succès complet, succès partiel, erreur, annulation,
-  // accès refusé (403), limitation de débit (429). Tous réactivent les boutons.
-  const terminalStates = ['completed', 'partial', 'error', 'cancelled', 'refused', 'rate_limited'];
+  // accès refusé (403), limitation de débit (429), action humaine requise
+  // (CAPTCHA non résolvable en mode serveur headless). Tous réactivent les boutons.
+  const terminalStates = ['completed', 'partial', 'error', 'cancelled', 'refused', 'rate_limited', 'action_required'];
   if (terminalStates.includes(state)) {
     startBtn.disabled = false;
     stopBtn.disabled = true;
@@ -546,7 +547,7 @@ window.api.onStatusChange(({ state, message }) => {
     // un nouveau scraping (cohérence Historique / Explorateur / Statistiques).
     // On rafraîchit aussi après un succès PARTIEL : des annonces valides ont
     // été sauvegardées même si l'enrichissement a été bloqué.
-    if (state === 'completed' || state === 'partial') {
+    if (state === 'completed' || state === 'partial' || state === 'action_required') {
       refreshActiveDataTab();
     }
 
@@ -577,6 +578,12 @@ window.api.onStatusChange(({ state, message }) => {
         type: 'error',
         title: 'Erreur de scraping',
         message: message || 'Le scraping a échoué. Consultez les logs pour le détail.',
+      });
+    } else if (state === 'action_required') {
+      showScrapeError({
+        type: 'warn',
+        title: 'Intervention requise (CAPTCHA)',
+        message: message || 'Leboncoin a demandé une vérification (CAPTCHA) qu\'une version serveur headless ne peut pas résoudre automatiquement. Réessayez plus tard, ou réduisez la vitesse/le nombre de pages.',
       });
     }
   }

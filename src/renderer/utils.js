@@ -157,6 +157,7 @@ function installDelegatedActions() {
       case 'toggleStar': window.toggleStar && window.toggleStar(id); break;
       case 'switchGalleryImg': window.switchGalleryImg && window.switchGalleryImg(url, el); break;
       case 'openFile': window.openFile && window.openFile(id); break;
+      case 'downloadExport': window.api.downloadExport && window.api.downloadExport(id, el.dataset.format || 'json'); break;
       case 'askDeleteJob': window.askDeleteJob && window.askDeleteJob(id); break;
       case 'loadPreset': window.loadPreset && window.loadPreset(Number(id)); break;
       case 'deletePreset': e.stopPropagation(); window.deletePreset && window.deletePreset(Number(id)); break;
@@ -187,6 +188,11 @@ window.debounce = debounce;
 
 window.openFolder = async (folderPath) => {
   if (!folderPath) return;
+  // Version Web : pas de dossiers locaux.
+  if (window.api && window.api.__isWeb) {
+    showToast('La version Web n\'ouvre pas de dossiers locaux — utilisez les boutons de téléchargement.', 'info');
+    return;
+  }
   try {
     const res = await window.api.openFolder(folderPath);
     if (res && res.success === false) {
@@ -199,6 +205,11 @@ window.openFolder = async (folderPath) => {
 
 window.openFile = async (filePath) => {
   if (!filePath) return;
+  // Version Web : on télécharge le fichier via HTTP au lieu d'ouvrir un chemin.
+  if (window.api && window.api.__isWeb) {
+    showToast('Utilisez les boutons de téléchargement (⬇ JSON / ⬇ TXT) pour récupérer vos exports.', 'info');
+    return;
+  }
   try {
     const res = await window.api.openFile(filePath);
     if (res && res.success === false) {
