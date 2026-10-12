@@ -23,8 +23,8 @@ services:
     envVars:
       - key: NODE_ENV
         value: production
-      - key: PORT
-        value: "3000"
+      # NE PAS définir PORT ici : Render injecte lui-même PORT et route le
+      # trafic vers ce port. Le fixer en dur provoquerait une erreur 502.
       - key: LBC_BASE_OUT_DIR
         value: /data
       # Secret de signature des sessions. GÉNÉRER une valeur aléatoire longue
